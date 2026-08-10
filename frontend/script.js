@@ -1,17 +1,20 @@
 // ---- Configuration ----
-const WS_URL = 'ws://localhost:8000/ws';
-const API_BASE = 'http://localhost:8000/api';
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
+const API_BASE = '/api';
 
 // ---- Map Setup ----
 const map = L.map('map', {
-    center: [-7.0, 109.0],
-    zoom: 8,
-    zoomControl: true
+    center: [-2.5, 118.0],
+    zoom: 5,
+    zoomControl: true,
+    preferCanvas: true
 });
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, &copy; <a href="https://carto.com/attributions">CARTO</a>'
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap, © CARTO'
 }).addTo(map);
+
+const jplRenderer = L.svg({ padding: 0.5 });
 
 // ---- State ----
 let trainMarkers = {};
@@ -21,7 +24,18 @@ let trainData = {};
 let ledStatus = {};
 let jplRadiusLayers = {};
 let jplPulseIntervals = {};
+let activeAlerts = new Set();
+
+// Infinite Scroll State
+let sortedJPLIDs = [];
+let sortedTrainIDs = [];
+let jplVisibleCount = 0;
+let trainVisibleCount = 0;
+let logOffset = 0;
+let logsLoading = false;
+let logsExhausted = false;
 let currentView = 'jpl';
+let isRenderingBatch = false;
 
 // ---- Sidebar Toggle ----
 const hamburger = document.getElementById('hamburger');
@@ -31,7 +45,6 @@ const closeSidebar = document.getElementById('close-sidebar');
 function openSidebar() {
     sidebarContent.classList.remove('hidden');
     hamburger.style.display = 'none';
-    // refresh map size after sidebar opens
     setTimeout(() => map.invalidateSize(), 100);
 }
 function closeSidebarFn() {
@@ -46,18 +59,11 @@ closeSidebar.addEventListener('click', closeSidebarFn);
 const resizeHandle = document.createElement('div');
 resizeHandle.className = 'resize-handle';
 sidebarContent.appendChild(resizeHandle);
-
-let isResizing = false;
-let startX, startWidth;
-
+let isResizing = false, startX, startWidth;
 resizeHandle.addEventListener('mousedown', function(e) {
-    isResizing = true;
-    startX = e.clientX;
-    startWidth = sidebarContent.offsetWidth;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+    isResizing = true; startX = e.clientX; startWidth = sidebarContent.offsetWidth;
+    document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
 });
-
 document.addEventListener('mousemove', function(e) {
     if (!isResizing) return;
     const newWidth = startWidth + (e.clientX - startX);
@@ -66,13 +72,8 @@ document.addEventListener('mousemove', function(e) {
         map.invalidateSize();
     }
 });
-
 document.addEventListener('mouseup', function() {
-    if (isResizing) {
-        isResizing = false;
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-    }
+    if (isResizing) { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; }
 });
 
 // ---- Tab Switching ----
@@ -82,313 +83,282 @@ const tabPanes = {
     train: document.getElementById('tab-train'),
     log: document.getElementById('tab-log')
 };
+const tabContent = document.getElementById('tab-content');
 
 tabBtns.forEach(btn => {
     btn.addEventListener('click', function() {
         tabBtns.forEach(b => b.classList.remove('active'));
         this.classList.add('active');
-        const tab = this.dataset.tab;
-        currentView = tab;
-        Object.keys(tabPanes).forEach(key => {
-            tabPanes[key].classList.toggle('active', key === tab);
-        });
-        renderTables();
-        if (tab === 'log') fetchLogs(); // refresh logs when switching to log tab
+        currentView = this.dataset.tab;
+        Object.keys(tabPanes).forEach(key => tabPanes[key].classList.toggle('active', key === currentView));
+        
+        // Reset scroll position when switching tabs
+        tabContent.scrollTop = 0;
+
+        if (currentView === 'jpl') renderJPLTable(true);
+        else if (currentView === 'train') renderTrainTable(true);
+        else if (currentView === 'log') fetchLogs(true);
     });
 });
 
+// ---- Infinite Scroll Listener ----
+tabContent.addEventListener('scroll', function() {
+    const nearBottom = tabContent.scrollTop + tabContent.clientHeight >= tabContent.scrollHeight - 100;
+    if (!nearBottom || isRenderingBatch) return;
+
+    if (currentView === 'jpl') {
+        if (jplVisibleCount < sortedJPLIDs.length) {
+            isRenderingBatch = true;
+            renderJPLTable(false);
+            isRenderingBatch = false;
+        }
+    } else if (currentView === 'train') {
+        if (trainVisibleCount < sortedTrainIDs.length) {
+            isRenderingBatch = true;
+            renderTrainTable(false);
+            isRenderingBatch = false;
+        }
+    } else if (currentView === 'log') {
+        if (!logsLoading && !logsExhausted) {
+            fetchLogs(false);
+        }
+    }
+});
+
+// ---- Table Click Delegation ----
+function setupTableDelegation() {
+    document.querySelector('#jpl-table tbody').addEventListener('click', function(e) {
+        const tr = e.target.closest('tr.data-row'); if (!tr) return;
+        const jpl = jplData[tr.dataset.jpl];
+        if (jpl && jpl.latitude != null && jpl.longitude != null) {
+            map.setView([jpl.latitude, jpl.longitude], 14);
+            if (jplMarkers[tr.dataset.jpl]) jplMarkers[tr.dataset.jpl].openPopup();
+        }
+    });
+    document.querySelector('#train-table tbody').addEventListener('click', function(e) {
+        const tr = e.target.closest('tr.data-row'); if (!tr) return;
+        const marker = trainMarkers[tr.dataset.vtdid];
+        if (marker) { map.setView(marker.getLatLng(), 14); marker.openPopup(); }
+    });
+    document.querySelector('#log-table tbody').addEventListener('click', function(e) {
+        const tr = e.target.closest('tr.data-row'); if (!tr) return;
+        const jpl = jplData[tr.dataset.funcloc];
+        if (jpl && jpl.latitude != null && jpl.longitude != null) {
+            map.setView([jpl.latitude, jpl.longitude], 14);
+            if (jplMarkers[tr.dataset.funcloc]) jplMarkers[tr.dataset.funcloc].openPopup();
+        }
+    });
+}
+setupTableDelegation();
+
 // ---- WebSocket ----
 let ws = null;
-
 function connectWebSocket() {
     ws = new WebSocket(WS_URL);
-    ws.onopen = function() { console.log('WebSocket connected'); };
-    ws.onmessage = function(event) {
-        const data = JSON.parse(event.data);
-        handleWebSocketMessage(data);
-    };
-    ws.onclose = function() {
-        console.warn('WebSocket closed, reconnecting...');
-        setTimeout(connectWebSocket, 3000);
-    };
-    ws.onerror = function(err) {
-        console.error('WebSocket error:', err);
-        ws.close();
-    };
+    ws.onopen = () => console.log('WS connected');
+    ws.onmessage = (event) => handleWebSocketMessage(JSON.parse(event.data));
+    ws.onclose = () => { console.warn('WS closed, reconnecting...'); setTimeout(connectWebSocket, 3000); };
+    ws.onerror = (err) => { console.error('WS error', err); ws.close(); };
 }
 connectWebSocket();
 
-// ---- Handle Incoming Messages ----
 function handleWebSocketMessage(msg) {
     if (msg.type === 'jpl_list') {
         msg.data.forEach(jpl => addJPLMarker(jpl));
-        renderTables();
-    } else if (msg.type === 'train_list') {
-        msg.data.forEach(train => updateTrain(train));
-        renderTables();
+        renderJPLTable(true);
+    } else if (msg.type === 'train_list' || msg.type === 'train_batch') {
+        msg.data.forEach(train => {
+            updateTrain(train);
+            updateTrainTableRow(train.L_VTDID);
+        });
+        if (msg.type === 'train_list' && Object.keys(trainData).length === msg.data.length) {
+            renderTrainTable(true);
+        }
     } else if (msg.type === 'led_list') {
         msg.data.forEach(led => { ledStatus[led.vtdid] = led; });
-        renderTables();
+        renderTrainTable(true);
     } else if (msg.type === 'train_update') {
         updateTrain(msg.data);
-        renderTables();
+        updateTrainTableRow(msg.data.L_VTDID);
     } else if (msg.type === 'led_update') {
-        const vtdid = msg.data.vtdid;
-        ledStatus[vtdid] = msg.data;
-        updateTrainMarkerColor(vtdid);
-        renderTables();
+        ledStatus[msg.data.vtdid] = msg.data;
+        updateTrainMarkerColor(msg.data.vtdid);
+        updateTrainTableRow(msg.data.vtdid);
     } else if (msg.type === 'panic_alert') {
         addAlert(msg.data);
-        renderTables();
+        renderJPLTable(true);
     } else if (msg.type === 'panic_alerts') {
         msg.data.forEach(alert => addAlert(alert, false));
+        renderJPLTable(true);
     }
 }
 
-// ---- Train Markers ----
+// ---- Train Map Markers ----
+function createTrainIcon(bodyColor, ringColor) {
+    return L.divIcon({
+        className: 'train-icon',
+        html: `<div class="train-dot" style="background:${bodyColor}; border-color:${ringColor};">🚆</div>`,
+        iconSize: [20, 20], iconAnchor: [10, 10]
+    });
+}
+function trainColors(vtdid) {
+    const led = ledStatus[vtdid] || {};
+    let ring = '#ffffff';
+    if (led.ledMerah === '1') ring = '#ff453a';
+    else if (led.ledKuning === '1') ring = '#ffd60a';
+    else if ('ledMerah' in led) ring = '#30d158';
+    return { body: '#ff8c00', ring };
+}
 function updateTrain(data) {
     const vtdid = data.L_VTDID;
     const lat = parseFloat(data.L_LAT);
     const lon = parseFloat(data.L_LON);
     if (isNaN(lat) || isNaN(lon)) return;
     trainData[vtdid] = data;
-
-    const led = ledStatus[vtdid] || {};
-    let color = '#007aff';
-    if (led.ledMerah === '1') color = '#ff453a';
-    else if (led.ledKuning === '1') color = '#ff9f0a';
-    else color = '#30d158';
-
+    const c = trainColors(vtdid);
     let marker = trainMarkers[vtdid];
     if (marker) {
         marker.setLatLng([lat, lon]);
-        const newIcon = createTrainIcon(color);
-        marker.setIcon(newIcon);
-        marker.setPopupContent(createTrainPopup(data, led));
+        if (marker.options._ring !== c.ring) {
+            marker.setIcon(createTrainIcon(c.body, c.ring));
+            marker.options._ring = c.ring;
+        }
+        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}));
     } else {
-        const icon = createTrainIcon(color);
-        marker = L.marker([lat, lon], { icon: icon }).addTo(map);
-        marker.bindPopup(createTrainPopup(data, led));
+        marker = L.marker([lat, lon], { icon: createTrainIcon(c.body, c.ring) }).addTo(map);
+        marker.options._ring = c.ring;
+        marker.bindPopup(createTrainPopup(data, ledStatus[vtdid] || {}));
         trainMarkers[vtdid] = marker;
     }
 }
-
-function createTrainIcon(color) {
-    return L.divIcon({
-        className: 'train-icon',
-        html: `<div style="background:${color};width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 0 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;font-size:10px;color:white;font-weight:bold;">🚆</div>`,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-    });
-}
-
 function updateTrainMarkerColor(vtdid) {
-    const data = trainData[vtdid];
-    if (!data) return;
-    const led = ledStatus[vtdid] || {};
-    let color = '#007aff';
-    if (led.ledMerah === '1') color = '#ff453a';
-    else if (led.ledKuning === '1') color = '#ff9f0a';
-    else color = '#30d158';
+    const data = trainData[vtdid]; if (!data) return;
+    const c = trainColors(vtdid);
     const marker = trainMarkers[vtdid];
-    if (marker) {
-        const newIcon = createTrainIcon(color);
-        marker.setIcon(newIcon);
-        marker.setPopupContent(createTrainPopup(data, led));
+    if (marker && marker.options._ring !== c.ring) {
+        marker.setIcon(createTrainIcon(c.body, c.ring));
+        marker.options._ring = c.ring;
+        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}));
     }
 }
-
 function createTrainPopup(data, led) {
     const status = led.ledMerah === '1' ? 'Bahaya' : (led.ledKuning === '1' ? 'Hati-hati' : 'Aman');
-    return `
-        <b>${data.L_VTDID}</b><br>
-        Speed: ${data.L_SPEED} km/h<br>
-        Location: ${data.L_LOCATION || 'N/A'}<br>
-        Status: ${status}<br>
-        Time: ${data.L_DATETIME}
-    `;
+    return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${status}`;
 }
+function updateTrainScale() {
+    const size = Math.max(16, Math.min(32, 8 + map.getZoom() * 2));
+    document.getElementById('map').style.setProperty('--train-size', size + 'px');
+}
+map.on('zoomend', updateTrainScale);
+updateTrainScale();
 
-// ---- JPL Markers (with pulse) ----
+// ---- JPL Map Markers ----
 function addJPLMarker(jpl) {
     const id = jpl.function_loc;
-    if (!id) return;
-    const lat = jpl.latitude;
-    const lon = jpl.longitude;
+    if (!id || jplMarkers[id]) return;
+    const lat = jpl.latitude, lon = jpl.longitude;
     if (lat == null || lon == null) return;
     jplData[id] = jpl;
-
-    const color = '#30d158';
     const marker = L.circleMarker([lat, lon], {
-        radius: 8,
-        fillColor: color,
-        color: '#fff',
-        weight: 2,
-        opacity: 1,
-        fillOpacity: 0.8
+        renderer: jplRenderer, radius: 6, fillColor: '#30d158', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8
     }).addTo(map);
-
-    marker.bindPopup(`
-        <b>${id}</b><br>
-        ${jpl.descript || ''}<br>
-        BA: ${jpl.ba || ''}<br>
-        Status: <span id="status-${id}">RELEASE</span>
-    `);
-
+    marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">RELEASE</span>`);
+    marker.on('click', () => map.setView([lat, lon], 14));
     jplMarkers[id] = marker;
-    startPulse(id, 'release');
-
-    marker.on('click', function() {
-        map.setView([lat, lon], 15);
-    });
 }
-
-// ---- Pulse Animation ----
-function startPulse(jplId, state) {
-    const marker = jplMarkers[jplId];
-    if (!marker) return;
-    if (jplPulseIntervals[jplId]) {
-        clearInterval(jplPulseIntervals[jplId]);
-        delete jplPulseIntervals[jplId];
-    }
-    let color, radius;
-    if (state === 'pbpressed') {
-        color = '#ff453a';
-        radius = 12;
-    } else {
-        color = '#30d158';
-        radius = 8;
-    }
-    marker.setStyle({ fillColor: color, radius: radius });
-
+function startPulse(jplId) {
+    const marker = jplMarkers[jplId]; if (!marker) return;
+    if (jplPulseIntervals[jplId]) clearInterval(jplPulseIntervals[jplId]);
     let growing = true;
-    const interval = setInterval(() => {
-        let r = marker.options.radius;
-        let op = marker.options.fillOpacity;
-        if (growing) {
-            r += 2;
-            op = Math.min(1, op + 0.1);
-            if (r >= radius + 4) growing = false;
-        } else {
-            r -= 2;
-            op = Math.max(0.4, op - 0.1);
-            if (r <= radius) growing = true;
-        }
+    jplPulseIntervals[jplId] = setInterval(() => {
+        let r = marker.getRadius();
+        if (growing) { r += 1; if (r >= 12) growing = false; } else { r -= 1; if (r <= 8) growing = true; }
         marker.setRadius(r);
-        marker.setStyle({ fillOpacity: op });
     }, 200);
-    jplPulseIntervals[jplId] = interval;
 }
-
-// ---- Radius Circles ----
+function stopPulse(jplId) {
+    if (jplPulseIntervals[jplId]) { clearInterval(jplPulseIntervals[jplId]); delete jplPulseIntervals[jplId]; }
+    const marker = jplMarkers[jplId];
+    if (marker) { marker.setRadius(6); marker.setStyle({ fillColor: '#30d158', fillOpacity: 0.8 }); }
+}
 function updateRadiusCircles(jplId, state) {
     if (jplRadiusLayers[jplId]) {
         jplRadiusLayers[jplId].forEach(layer => map.removeLayer(layer));
         delete jplRadiusLayers[jplId];
     }
     if (state !== 'pbpressed') return;
-
-    const jpl = jplData[jplId];
-    if (!jpl) return;
-    const lat = jpl.latitude;
-    const lon = jpl.longitude;
+    const jpl = jplData[jplId]; if (!jpl) return;
+    const lat = jpl.latitude, lon = jpl.longitude;
     if (lat == null || lon == null) return;
-
-    const red = L.circle([lat, lon], {
-        radius: 1100,
-        color: '#ff453a',
-        fillColor: '#ff453a',
-        fillOpacity: 0.15,
-        weight: 2,
-        opacity: 0.6
-    }).addTo(map);
-    const yellow = L.circle([lat, lon], {
-        radius: 3000,
-        color: '#ff9f0a',
-        fillColor: '#ff9f0a',
-        fillOpacity: 0.1,
-        weight: 2,
-        opacity: 0.5
-    }).addTo(map);
+    const red = L.circle([lat, lon], { renderer: jplRenderer, radius: 1100, color: '#ff453a', fillColor: '#ff453a', fillOpacity: 0.15, weight: 2, opacity: 0.6 }).addTo(map);
+    const yellow = L.circle([lat, lon], { renderer: jplRenderer, radius: 3000, color: '#ff9f0a', fillColor: '#ff9f0a', fillOpacity: 0.1, weight: 2, opacity: 0.5 }).addTo(map);
     jplRadiusLayers[jplId] = [red, yellow];
 }
-
-// ---- Set JPL State ----
 function setJPLState(jplId, state) {
-    const marker = jplMarkers[jplId];
-    if (!marker) return;
-    const color = state === 'pbpressed' ? '#ff453a' : '#30d158';
-    marker.setStyle({ fillColor: color });
-    startPulse(jplId, state);
+    const marker = jplMarkers[jplId]; if (!marker) return;
+    if (state === 'pbpressed') { marker.setStyle({ fillColor: '#ff453a' }); startPulse(jplId); } else { stopPulse(jplId); }
     updateRadiusCircles(jplId, state);
     const popup = marker.getPopup();
-    if (popup) {
-        const content = popup.getContent();
-        const newContent = content.replace(/Status: .*/, `Status: ${state.toUpperCase()}`);
-        popup.setContent(newContent);
-    }
+    if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${state.toUpperCase()}`));
 }
 
 // ---- Alert Stack ----
 function addAlert(alertData, autoClose = true) {
     const alertItem = document.createElement('div');
     alertItem.className = 'alert-item';
+    alertItem.style.cursor = 'pointer';
+    
     const event = alertData.event;
     const jplId = event.jplId;
     const jpl = jplData[jplId];
     const caught = alertData.caught_trains || [];
+    activeAlerts.add(jplId);
 
-    let caughtHtml = '';
+    let caughtHtml = caught.length > 0 ? '<div style="margin-top:6px;"><strong>Caught trains:</strong><br>' : '<div style="margin-top:6px;color:#888;">No trains caught</div>';
     if (caught.length > 0) {
-        caughtHtml = '<div style="margin-top:6px;"><strong>Caught trains:</strong><br>';
         caught.forEach(t => {
             const cls = t.danger === 'Bahaya' ? 'danger-bahaya' : 'danger-hati-hati';
             caughtHtml += `<span class="caught-train ${cls}" data-vtdid="${t.vtdid}">🚆 ${t.vtdid} (${t.danger})</span> `;
         });
         caughtHtml += '</div>';
-    } else {
-        caughtHtml = '<div style="margin-top:6px;color:#888;">No trains caught</div>';
     }
 
-    alertItem.innerHTML = `
-        <div class="alert-header">
-            <span>🚨 ${jplId}</span>
-            <button class="alert-close" data-jpl="${jplId}">&times;</button>
-        </div>
-        <div class="alert-body">
-            <div><strong>${event.eventType}</strong> at ${event.datetime}</div>
-            <div>${jpl ? jpl.descript : ''}</div>
-            ${caughtHtml}
-            <div style="margin-top:4px;font-size:12px;color:#888;">Click to center map</div>
-        </div>
-    `;
-
-    alertItem.querySelector('.alert-body').addEventListener('click', function(e) {
+    alertItem.innerHTML = `<div class="alert-header"><span>🚨 ${jplId}</span><button class="alert-close" data-jpl="${jplId}">&times;</button></div><div class="alert-body"><div><strong>${event.eventType}</strong> at ${event.datetime}</div><div>${jpl ? jpl.descript : ''}</div>${caughtHtml}</div>`;
+    
+    // Direct map focus on popup notification click
+    alertItem.addEventListener('click', function(e) {
         if (e.target.closest('.alert-close')) return;
-        const jplId = this.closest('.alert-item').querySelector('.alert-close').dataset.jpl;
-        const jpl = jplData[jplId];
-        if (jpl && jpl.latitude && jpl.longitude) {
-            map.setView([jpl.latitude, jpl.longitude], 14);
+        
+        // If clicking a caught train tag, zoom to train instead
+        const caughtTrainTag = e.target.closest('.caught-train');
+        if (caughtTrainTag) {
+            const vtdid = caughtTrainTag.dataset.vtdid;
+            const marker = trainMarkers[vtdid];
+            if (marker) {
+                map.setView(marker.getLatLng(), 14);
+                marker.openPopup();
+            }
+            return;
+        }
+
+        // Direct to JPL location on map & open popup
+        const j = jplData[jplId];
+        if (j && j.latitude != null && j.longitude != null) {
+            map.setView([j.latitude, j.longitude], 14);
+            if (jplMarkers[jplId]) {
+                jplMarkers[jplId].openPopup();
+            }
         }
     });
 
     alertItem.querySelector('.alert-close').addEventListener('click', function(e) {
         e.stopPropagation();
-        const item = this.closest('.alert-item');
-        removeAlertItem(item);
+        removeAlertItem(this.closest('.alert-item'));
     });
 
-    const stack = document.getElementById('alert-stack');
-    stack.appendChild(alertItem);
+    document.getElementById('alert-stack').appendChild(alertItem);
     setJPLState(jplId, 'pbpressed');
-
-    if (autoClose) {
-        const timeout = setTimeout(() => {
-            removeAlertItem(alertItem);
-        }, 10000);
-        alertItem._timeout = timeout;
-    }
-    renderTables();
+    if (autoClose) alertItem._timeout = setTimeout(() => removeAlertItem(alertItem), 10000);
 }
 
 function removeAlertItem(item) {
@@ -397,181 +367,156 @@ function removeAlertItem(item) {
     item.remove();
     const remaining = document.querySelectorAll(`.alert-item .alert-close[data-jpl="${jplId}"]`);
     if (remaining.length === 0) {
+        activeAlerts.delete(jplId);
         setJPLState(jplId, 'release');
-        if (jplRadiusLayers[jplId]) {
-            jplRadiusLayers[jplId].forEach(l => map.removeLayer(l));
-            delete jplRadiusLayers[jplId];
-        }
-        renderTables();
+        renderJPLTable(true);
     }
 }
 
-// ---- Tables Rendering ----
-function renderTables() {
-    renderJPLTable();
-    renderTrainTable();
-}
+// ==========================================
+// INFINITE SCROLL TABLE RENDERING
+// ==========================================
 
-function renderJPLTable() {
-    const tbody = document.querySelector('#jpl-table tbody');
-    if (!tbody) return;
-    const rows = [];
-    Object.keys(jplData).forEach(id => {
-        const jpl = jplData[id];
-        const activeAlert = document.querySelector(`.alert-item .alert-close[data-jpl="${id}"]`);
-        const status = activeAlert ? 'PBPRESSED' : 'RELEASE';
-        rows.push({ id, jpl, status });
-    });
-    rows.sort((a, b) => (a.status === 'PBPRESSED' ? 0 : 1) - (b.status === 'PBPRESSED' ? 0 : 1));
-
-    tbody.innerHTML = rows.map(row => `
-        <tr data-jpl="${row.id}" class="${row.status === 'PBPRESSED' ? 'status-pbpressed' : 'status-release'}">
-            <td>${row.id}</td>
-            <td>${row.jpl.ba || ''}</td>
-            <td>${row.jpl.descript || ''}</td>
-            <td class="${row.status === 'PBPRESSED' ? 'status-pbpressed' : 'status-release'}">${row.status}</td>
-        </tr>
-    `).join('');
-
-    tbody.querySelectorAll('tr').forEach(tr => {
-        tr.addEventListener('click', function() {
-            const jplId = this.dataset.jpl;
-            const jpl = jplData[jplId];
-            if (jpl && jpl.latitude && jpl.longitude) {
-                map.setView([jpl.latitude, jpl.longitude], 14);
-                const marker = jplMarkers[jplId];
-                if (marker) marker.openPopup();
-            }
+// --- JPL Table ---
+function renderJPLTable(reset = false) {
+    const tbody = document.querySelector('#jpl-table tbody'); if (!tbody) return;
+    if (reset) {
+        jplVisibleCount = 0;
+        sortedJPLIDs = Object.keys(jplData).sort((a, b) => {
+            const statusA = activeAlerts.has(a) ? 0 : 1;
+            const statusB = activeAlerts.has(b) ? 0 : 1;
+            return statusA - statusB;
         });
-    });
+        tbody.innerHTML = '';
+    }
+
+    const nextBatchIDs = sortedJPLIDs.slice(jplVisibleCount, jplVisibleCount + 50);
+    if (nextBatchIDs.length === 0) return;
+
+    const html = nextBatchIDs.map(id => {
+        const jpl = jplData[id] || {};
+        const status = activeAlerts.has(id) ? 'PBPRESSED' : 'RELEASE';
+        const statusClass = status === 'PBPRESSED' ? 'status-pbpressed' : 'status-release';
+        return `
+            <tr class="data-row ${statusClass}" data-jpl="${id}">
+                <td>${id}</td><td>${jpl.ba || ''}</td><td>${jpl.descript || ''}</td>
+                <td class="${statusClass}">${status}</td>
+            </tr>`;
+    }).join('');
+
+    tbody.insertAdjacentHTML('beforeend', html);
+    jplVisibleCount += nextBatchIDs.length;
 }
 
-function renderTrainTable() {
-    const tbody = document.querySelector('#train-table tbody');
-    if (!tbody) return;
-    const rows = [];
-    Object.keys(trainData).forEach(vtdid => {
-        const train = trainData[vtdid];
+// --- Train Table ---
+function renderTrainTable(reset = false) {
+    const tbody = document.querySelector('#train-table tbody'); if (!tbody) return;
+    if (reset) {
+        trainVisibleCount = 0;
+        const order = { 'Bahaya': 0, 'Hati-hati': 1, 'Aman': 2 };
+        sortedTrainIDs = Object.keys(trainData).sort((a, b) => {
+            const ledA = ledStatus[a] || {};
+            const ledB = ledStatus[b] || {};
+            const statusA = ledA.ledMerah === '1' ? 'Bahaya' : (ledA.ledKuning === '1' ? 'Hati-hati' : 'Aman');
+            const statusB = ledB.ledMerah === '1' ? 'Bahaya' : (ledB.ledKuning === '1' ? 'Hati-hati' : 'Aman');
+            return order[statusA] - order[statusB];
+        });
+        tbody.innerHTML = '';
+    }
+
+    const nextBatchIDs = sortedTrainIDs.slice(trainVisibleCount, trainVisibleCount + 50);
+    if (nextBatchIDs.length === 0) return;
+
+    const html = nextBatchIDs.map(vtdid => {
+        const train = trainData[vtdid] || {};
         const led = ledStatus[vtdid] || {};
-        let status = 'Aman';
-        let statusClass = 'status-aman';
+        let status = 'Aman', statusClass = 'status-aman';
         if (led.ledMerah === '1') { status = 'Bahaya'; statusClass = 'status-bahaya'; }
         else if (led.ledKuning === '1') { status = 'Hati-hati'; statusClass = 'status-hati-hati'; }
-        const location = [
-            train.L_KECAMATAN || '',
-            train.L_KABUPATEN || '',
-            train.L_PROPINSI || ''
-        ].filter(Boolean).join(', ');
-        rows.push({
-            vtdid,
-            sarana: train.L_SARANA || '',
-            kereta: train.L_KERETA || '',
-            speed: train.L_SPEED || '0',
-            location: location || train.L_LOCATION || '',
-            received: train.L_RECEIVED_DATE || '',
-            status,
-            statusClass,
-            train
-        });
-    });
-    const order = { 'Bahaya': 0, 'Hati-hati': 1, 'Aman': 2 };
-    rows.sort((a, b) => order[a.status] - order[b.status]);
+        const location = [train.L_KECAMATAN, train.L_KABUPATEN, train.L_PROPINSI].filter(Boolean).join(', ');
 
-    tbody.innerHTML = rows.map(row => `
-        <tr data-vtdid="${row.vtdid}">
-            <td>${row.vtdid}</td>
-            <td>${row.sarana}</td>
-            <td>${row.kereta}</td>
-            <td>${row.speed}</td>
-            <td>${row.location}</td>
-            <td>${row.received.slice(0,16)}</td>
-            <td class="${row.statusClass}">${row.status}</td>
-        </tr>
-    `).join('');
+        return `
+            <tr class="data-row" data-vtdid="${vtdid}">
+                <td>${vtdid}</td>
+                <td>${train.L_SARANA || ''}</td>
+                <td>${train.L_KERETA || ''}</td>
+                <td>${train.L_SPEED || '0'}</td>
+                <td>${location || train.L_LOCATION || ''}</td>
+                <td>${(train.L_RECEIVED_DATE || '').slice(0, 16)}</td>
+                <td class="${statusClass}">${status}</td>
+            </tr>`;
+    }).join('');
 
-    tbody.querySelectorAll('tr').forEach(tr => {
-        tr.addEventListener('click', function() {
-            const vtdid = this.dataset.vtdid;
-            const marker = trainMarkers[vtdid];
-            if (marker) {
-                const latlng = marker.getLatLng();
-                map.setView(latlng, 14);
-                marker.openPopup();
-            }
-        });
-    });
+    tbody.insertAdjacentHTML('beforeend', html);
+    trainVisibleCount += nextBatchIDs.length;
 }
 
-function fetchLogs() {
+// Live updates for Train Table
+function updateTrainTableRow(vtdid) {
+    const tr = document.querySelector(`#train-table tbody tr[data-vtdid="${vtdid}"]`);
+    if (!tr) return; 
+    const train = trainData[vtdid]; const led = ledStatus[vtdid] || {};
+    let status = 'Aman', statusClass = 'status-aman';
+    if (led.ledMerah === '1') { status = 'Bahaya'; statusClass = 'status-bahaya'; }
+    else if (led.ledKuning === '1') { status = 'Hati-hati'; statusClass = 'status-hati-hati'; }
+    const location = [train.L_KECAMATAN, train.L_KABUPATEN, train.L_PROPINSI].filter(Boolean).join(', ');
+    const cells = tr.children;
+    cells[3].textContent = train.L_SPEED || '0';
+    cells[4].textContent = location || train.L_LOCATION || '';
+    cells[6].textContent = status;
+    cells[6].className = statusClass;
+}
+
+// --- Event Log Table (API Pagination) ---
+function fetchLogs(reset = true) {
     const tbody = document.querySelector('#log-table tbody');
-    if (!tbody) return;
-    fetch(`${API_BASE}/logs?limit=100`)
+    if (!tbody || logsLoading) return;
+    if (reset) { logOffset = 0; logsExhausted = false; tbody.innerHTML = ''; }
+    if (logsExhausted) return;
+
+    logsLoading = true;
+    showLoadingIndicator(tbody, 9);
+
+    fetch(`${API_BASE}/logs?limit=50&offset=${logOffset}`)
         .then(res => res.json())
         .then(data => {
+            hideLoadingIndicator(tbody);
             const logs = data.logs || [];
-            tbody.innerHTML = logs.map(log => `
-                <tr data-funcloc="${log.funcloc || ''}">
-                    <td>${log.id ? log.id.slice(0,5)+'...' : ''}</td>
-                    <td>${log.event_time || ''}</td>
-                    <td>${log.event_type || ''}</td>
-                    <td>${log.trigger_type || ''}</td>
-                    <td>${log.device_id || ''}</td>
-                    <td>${log.funcloc || ''}</td>
-                    <td>${log.jpl_lat || ''}</td>
-                    <td>${log.jpl_lon || ''}</td>
-                    <td>${log.vtdid || ''}</td>
-                    <td>${log.loco_lat || ''}</td>
-                    <td>${log.loco_lon || ''}</td>
-                    <td>${log.distance_m || ''}</td>
-                    <td>${log.previous_alert || ''}</td>
-                    <td>${log.alert_changed || ''}</td>
-                    <td>${log.release_count || ''}</td>
-                    <td>${log.loco_speed || ''}</td>
-                    <td>${log.loco_location || ''}</td>
-                </tr>
-            `).join('');
-
-            tbody.querySelectorAll('tr').forEach(tr => {
-                tr.addEventListener('click', function() {
-                    const funcloc = this.dataset.funcloc;
-                    if (funcloc) {
-                        const jpl = jplData[funcloc];
-                        if (jpl && jpl.latitude && jpl.longitude) {
-                            map.setView([jpl.latitude, jpl.longitude], 14);
-                            const marker = jplMarkers[funcloc];
-                            if (marker) marker.openPopup();
-                        }
-                    }
-                });
-            });
+            logOffset += logs.length;
+            if (logs.length < 50) logsExhausted = true;
+            const html = logs.map(log => `
+                <tr class="data-row" data-funcloc="${log.funcloc || ''}">
+                    <td>${log.id ? log.id.slice(0,5)+'...' : ''}</td><td>${log.event_time || ''}</td>
+                    <td>${log.event_type || ''}</td><td>${log.trigger_type || ''}</td>
+                    <td>${log.device_id || ''}</td><td>${log.funcloc || ''}</td>
+                    <td>${log.vtdid || ''}</td><td>${log.distance_m || ''}</td><td>${log.loco_speed || ''}</td>
+                </tr>`).join('');
+            tbody.insertAdjacentHTML('beforeend', html);
         })
-        .catch(err => console.warn('Failed to fetch logs:', err));
+        .catch(err => { hideLoadingIndicator(tbody); console.warn('Failed to fetch logs:', err); })
+        .finally(() => { logsLoading = false; });
 }
 
-// ---- Railway Overpass ----
-function fetchRailways() {
-    const bounds = map.getBounds();
-    const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
-    const url = `https://overpass-api.de/api/interpreter?data=[out:json];way["railway"="rail"](${bbox});out geom;`;
-    fetch(url)
-        .then(res => res.json())
-        .then(data => {
-            data.elements.forEach(el => {
-                if (el.geometry) {
-                    const coords = el.geometry.map(g => [g.lat, g.lon]);
-                    L.polyline(coords, {
-                        color: '#0055aa',
-                        weight: 3,
-                        opacity: 0.6,
-                        smoothFactor: 1
-                    }).addTo(map);
-                }
-            });
-        })
-        .catch(err => console.warn('Railway fetch failed:', err));
+function showLoadingIndicator(tbody, colspan) {
+    hideLoadingIndicator(tbody);
+    const tr = document.createElement('tr');
+    tr.className = 'loading-row';
+    tr.innerHTML = `<td colspan="${colspan}"><div class="spinner"></div> Loading more data...</td>`;
+    tbody.appendChild(tr);
 }
-map.on('moveend', fetchRailways);
-fetchRailways();
+function hideLoadingIndicator(tbody) {
+    const loader = tbody.querySelector('.loading-row');
+    if (loader) loader.remove();
+}
 
-// ---- Force map redraw after load ----
+// ---- Load Offline Railways ----
+fetch('/static/railway.geojson')
+    .then(res => res.ok ? res.json() : Promise.reject("Failed to load geojson"))
+    .then(data => {
+        L.geoJSON(data, { style: { color: '#00e5ff', weight: 8, opacity: 0.3, lineCap: 'round', lineJoin: 'round' } }).addTo(map);
+        L.geoJSON(data, { style: { color: 'rgb(199, 236, 199)', weight: 2, opacity: 0.9, lineCap: 'round', lineJoin: 'round' } }).addTo(map);
+        console.log("Neon Railways Loaded!");
+    })
+    .catch(err => console.error("Railway load failed:", err));
+
 setTimeout(() => map.invalidateSize(), 500);

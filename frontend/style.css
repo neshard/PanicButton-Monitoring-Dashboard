@@ -3,62 +3,68 @@
     padding: 0;
     box-sizing: border-box;
 }
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background: #f0f2f5;
 }
+
 #map {
     height: 100vh;
     width: 100%;
-    background: #e5e5e5;
+    background: #1a1a1a; /* matches dark tiles while loading */
 }
 
-/* ===== Sidebar (dark theme) ===== */
+/* ===== Sidebar (LIGHT theme, above Leaflet controls) ===== */
 #sidebar {
     position: fixed;
     top: 0;
     left: 0;
     height: 100%;
-    z-index: 1000;
+    z-index: 1200; /* 🚀 was 1000 (same as Leaflet controls) — now menu covers zoom buttons */
     display: flex;
     align-items: flex-start;
-    pointer-events: none; /* let clicks pass through to map except on interactive elements */
+    pointer-events: none;
 }
+
 .hamburger {
-    background: #1e1e1e;
+    background: #ffffff;
     padding: 12px 10px;
     border-radius: 0 8px 8px 0;
     cursor: pointer;
-    box-shadow: 2px 0 8px rgba(0,0,0,0.3);
+    box-shadow: 2px 0 8px rgba(0,0,0,0.15);
     display: flex;
     flex-direction: column;
     gap: 4px;
-    margin-top: 120px;      /* below zoom control */
+    margin-top: 120px; /* below zoom control */
     pointer-events: auto;
-    border: 1px solid #333;
+    border: 1px solid #ddd;
     border-left: none;
 }
+
 .hamburger span {
     display: block;
     width: 24px;
     height: 3px;
-    background: #ccc;
+    background: #555;
     border-radius: 2px;
 }
+
 #sidebar-content {
-    background: #1e1e1e;
-    color: #e0e0e0;
+    background: #ffffff;
+    color: #222;
     width: 420px;
     height: 100%;
-    box-shadow: 2px 0 12px rgba(0,0,0,0.5);
+    box-shadow: 2px 0 12px rgba(0,0,0,0.2);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     pointer-events: auto;
-    border-right: 1px solid #333;
+    border-right: 1px solid #ddd;
     position: relative;
-    transition: none; /* disable transition for smooth resize */
+    transition: none;
 }
+
 #sidebar-content.hidden {
     display: none;
 }
@@ -74,8 +80,9 @@ body {
     z-index: 10;
     background: transparent;
 }
+
 #sidebar-content .resize-handle:hover {
-    background: rgba(255,255,255,0.1);
+    background: rgba(0,0,0,0.06);
 }
 
 /* Header */
@@ -84,103 +91,140 @@ body {
     justify-content: space-between;
     align-items: center;
     padding: 16px 20px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid #e0e0e0;
     font-weight: 600;
     font-size: 18px;
-    color: #fff;
+    color: #111;
 }
+
 #close-sidebar {
     background: none;
     border: none;
     font-size: 28px;
     cursor: pointer;
-    color: #aaa;
+    color: #888;
 }
+
 #close-sidebar:hover {
-    color: #fff;
+    color: #111;
 }
 
 /* Tabs */
 #tabs {
     display: flex;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid #e0e0e0;
 }
+
 .tab-btn {
     flex: 1;
     padding: 12px 0;
     background: none;
     border: none;
     font-weight: 600;
-    color: #aaa;
+    color: #777;
     cursor: pointer;
     transition: all 0.2s;
     border-bottom: 3px solid transparent;
 }
+
 .tab-btn.active {
     color: #0a84ff;
     border-bottom-color: #0a84ff;
 }
+
 .tab-btn:hover {
-    background: #2a2a2a;
+    background: #f2f2f2;
 }
 
 /* Tab content */
 #tab-content {
     flex: 1;
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: auto; /* Allows horizontal table scroll when needed */
     padding: 0 12px 12px 12px;
 }
+
 .tab-pane {
     display: none;
-    height: 100%;
-    overflow-x: auto;  /* allow horizontal scroll for wide tables */
+    /* Removed height: 100% and overflow-x: auto to prevent nested scroll containers */
 }
+
 .tab-pane.active {
     display: block;
 }
 
-/* ===== Tables ===== */
+/* ===== Tables (light) ===== */
 table {
     width: 100%;
     border-collapse: collapse;
     font-size: 13px;
     margin-top: 10px;
 }
+
 thead {
-    background: #2a2a2a;
+    background: #f5f7fa;
     position: sticky;
     top: 0;
     z-index: 2;
 }
+
 th {
     padding: 8px 6px;
     text-align: left;
-    border-bottom: 2px solid #444;
-    color: #ccc;
+    border-bottom: 2px solid #ddd;
+    color: #555;
     white-space: nowrap;
 }
+
 td {
     padding: 8px 6px;
-    border-bottom: 1px solid #333;
-    color: #d0d0d0;
+    border-bottom: 1px solid #eee;
+    color: #333;
     white-space: nowrap;
 }
+
 tbody tr {
     cursor: pointer;
     transition: background 0.15s;
 }
+
 tbody tr:hover {
-    background: #2a2a2a;
+    background: #f2f2f2;
 }
 
-/* Status colours (dark background) */
-.status-aman { color: #30d158; font-weight: 600; }
-.status-hati-hati { color: #ff9f0a; font-weight: 600; }
-.status-bahaya { color: #ff453a; font-weight: 600; }
-.status-release { color: #30d158; font-weight: 600; }
-.status-pbpressed { color: #ff453a; font-weight: 600; }
+/* Status colours */
+.status-aman { color: #1d9a4e; font-weight: 600; }
+.status-hati-hati { color: #b26a00; font-weight: 600; }
+.status-bahaya { color: #d5271c; font-weight: 600; }
+.status-release { color: #1d9a4e; font-weight: 600; }
+.status-pbpressed { color: #d5271c; font-weight: 600; }
 
-/* ===== Alert Stack ===== */
+/* ===== Train markers (scale with zoom via --train-size) ===== */
+.train-icon {
+    background: transparent;
+    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.train-dot {
+    width: var(--train-size, 20px);
+    height: var(--train-size, 20px);
+    border-radius: 50%;
+    border: 3px solid #fff;
+    box-shadow: 0 0 10px rgba(255, 140, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(var(--train-size, 20px) * 0.5);
+    line-height: 1;
+    color: #fff;
+    box-sizing: border-box;
+    transition: width 0.25s ease, height 0.25s ease, font-size 0.25s ease;
+}
+
+/* ===== Alert Stack (kept dark to pop on the dark map) ===== */
 #alert-stack {
     position: fixed;
     top: 20px;
@@ -192,8 +236,9 @@ tbody tr:hover {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    pointer-events: none; /* allow clicks on underlying map */
+    pointer-events: none;
 }
+
 .alert-item {
     background: #1e1e1e;
     border-radius: 10px;
@@ -205,15 +250,18 @@ tbody tr:hover {
     transition: opacity 0.3s;
     color: #e0e0e0;
 }
+
 .alert-item.fade-out {
     opacity: 0;
 }
+
 .alert-item .alert-header {
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
     font-weight: 600;
 }
+
 .alert-item .alert-close {
     background: none;
     border: none;
@@ -221,13 +269,16 @@ tbody tr:hover {
     cursor: pointer;
     color: #aaa;
 }
+
 .alert-item .alert-close:hover {
     color: #fff;
 }
+
 .alert-item .alert-body {
     margin-top: 6px;
     font-size: 14px;
 }
+
 .alert-item .alert-body .caught-train {
     display: inline-block;
     background: #2a2a2a;
@@ -236,20 +287,40 @@ tbody tr:hover {
     margin: 4px 4px 0 0;
     font-size: 12px;
 }
+
 .alert-item .alert-body .danger-bahaya {
     background: #ff453a;
     color: #fff;
 }
+
 .alert-item .alert-body .danger-hati-hati {
     background: #ff9f0a;
     color: #fff;
-}
-.alert-item .alert-body .clickable {
-    cursor: pointer;
-    text-decoration: underline;
 }
 
 @keyframes slideIn {
     from { transform: translateX(20px); opacity: 0; }
     to { transform: translateX(0); opacity: 1; }
+}
+
+/* ===== Loading Spinner for Infinite Scroll ===== */
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(0,0,0,0.1);
+    border-radius: 50%;
+    border-top-color: #0a84ff;
+    animation: spin 1s ease-in-out infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+.loading-row td {
+    text-align: center;
+    padding: 15px !important;
+    color: #888;
+    font-style: italic;
 }

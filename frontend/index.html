@@ -4,27 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Railway Panic Monitor</title>
+    
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        /* Import external stylesheet */
-        @import url('style.css');
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- Map container -->
-    <div id="map"></div>
-
-    <!-- Left Sidebar (collapsible) -->
+    <!-- Sidebar -->
     <div id="sidebar">
-        <!-- Hamburger icon (stripes) when folded -->
-        <div id="hamburger" class="hamburger">
+        <div class="hamburger" id="hamburger">
             <span></span><span></span><span></span>
         </div>
-        <!-- Sidebar content (unfolded) -->
         <div id="sidebar-content" class="hidden">
             <div id="sidebar-header">
-                <span>Menu</span>
+                <span>Railway Panic Monitor</span>
                 <button id="close-sidebar">&times;</button>
             </div>
             <div id="tabs">
@@ -33,30 +26,21 @@
                 <button class="tab-btn" data-tab="log">Event Log</button>
             </div>
             <div id="tab-content">
-                <!-- JPL table -->
                 <div id="tab-jpl" class="tab-pane active">
                     <table id="jpl-table">
-                        <thead>
-                            <tr><th>func_loc</th><th>ba</th><th>Lokasi</th><th>Status</th></tr>
-                        </thead>
+                        <thead><tr><th>func_loc</th><th>ba</th><th>Lokasi</th><th>Status</th></tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
-                <!-- Train table -->
-                <div id="tab-train" class="tab-pane hidden">
+                <div id="tab-train" class="tab-pane">
                     <table id="train-table">
-                        <thead>
-                            <tr><th>VTDID</th><th>SARANA</th><th>KERETA</th><th>Speed</th><th>Location</th><th>Received</th><th>Status</th></tr>
-                        </thead>
+                        <thead><tr><th>VTDID</th><th>SARANA</th><th>KERETA</th><th>Speed</th><th>Location</th><th>Received</th><th>Status</th></tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
-                <!-- Event Log table -->
-                <div id="tab-log" class="tab-pane hidden">
+                <div id="tab-log" class="tab-pane">
                     <table id="log-table">
-                        <thead>
-                            <tr><th>ID</th><th>Event Time</th><th>Event Type</th><th>Trigger</th><th>Device</th><th>Funcloc</th><th>JPL Lat</th><th>JPL Lon</th><th>VTDID</th><th>Loco Lat</th><th>Loco Lon</th><th>Dist (m)</th><th>Prev Alert</th><th>Alert Changed</th><th>Release Count</th><th>Loco Speed</th><th>Loco Location</th></tr>
-                        </thead>
+                        <thead><tr><th>ID</th><th>Time</th><th>Type</th><th>Trigger</th><th>Device</th><th>Funcloc</th><th>VTDID</th><th>Dist</th><th>Speed</th></tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
@@ -64,12 +48,11 @@
         </div>
     </div>
 
-    <!-- Right Alert Stack -->
     <div id="alert-stack"></div>
+    <div id="map"></div>
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <!-- Our script -->
     <script src="script.js"></script>
 </body>
 </html>

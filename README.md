@@ -4,20 +4,22 @@ A real‑time monitoring dashboard for railway crossings with panic button alert
 
 ## Features
 
-- **Live map** with moving train markers (coloured by LED status)
-- **JPL crossings** with pulse animations and radius circles on panic
+- **High-Performance Live Map** powered by MapLibre GL JS with moving train markers (coloured by LED status)
+- **Offline Neon Railway Lines** rendered via static GeoJSON for instant loading, zero API lag, and a glowing visual effect
+- **JPL Crossings** with smooth CSS-based pulse animations and dynamic radius circles on panic events
 - **Left sidebar** with three tabs:
   - **JPL** – list of crossings, PBPRESSED sorted to top
   - **Kereta (Train)** – list of trains, sorted by danger level (Bahaya > Hati‑hati > Aman)
   - **Event Log** – complete panic event history (latest first), with shortened ID
 - **Resizable sidebar** (drag right edge)
-- **Alert stack** on the right – shows each panic with caught trains dropdown, auto‑closes after 10s
-- **Dark theme** for sidebar, light map background
+- **Alert stack** on the right – shows each panic with caught trains, auto‑closes after 10s
+- **Resilient Backend** that gracefully degrades and serves the UI even if the database or MQTT broker is temporarily offline
+- **Unified Dark Theme** for both the sidebar and the map background (CARTO Dark Matter) to make the neon railways pop
 
 ## Technology Stack
 
 - **Backend**: Python (FastAPI), Paho MQTT, ClickHouse
-- **Frontend**: Vanilla JavaScript, Leaflet.js, WebSocket
+- **Frontend**: Vanilla JavaScript, MapLibre GL JS, WebSocket
 - **Broker**: Mosquitto (dummy) via Docker
 - **Database**: ClickHouse (stores panic events and JPL master)
 
@@ -25,7 +27,6 @@ A real‑time monitoring dashboard for railway crossings with panic button alert
 
 - Python 3.10+
 - Docker & Docker Compose
-- Node.js (optional, for a local HTTP server)
 - MQTT broker credentials (or use the included dummy broker)
 
 ## Project Structure
@@ -46,27 +47,32 @@ railway-panic-monitor/
 │ └── script.js
 ├── simulator/
 │ └── mqtt_simulator.py # Dummy data publisher
+├── static/
+│ └── railway.geojson
 ├── docker-compose.yml # Dummy Mosquitto broker
 └── README.md
+
+---
 
 ## Setup Instructions
 
 ### 1. Clone the repository
 ```bash
 git clone <your-repo-url>
-cd railway-panic-monitor
+cd dashboard_panicButton
+```
 
 ### 2. Configure environment variables
-Copy .env.example to backend/.env and fill in your actual credentials
+Copy `.env.example` to `backend/.env` and fill in your actual credentials.
 
-For testing with the dummy broker, set LOCOTRACK_HOST to 127.0.0.1 and LOCOTRACK_PORT to 1884 as well.
+For testing with the dummy local broker, set `LOCOTRACK_HOST` to `127.0.0.1` and `LOCOTRACK_PORT` to `1884`.
 
 ### 3. Start the dummy MQTT broker (optional)
-If you don't have a real broker, start the dummy Mosquitto:
+If you don't have a real broker available, start the dummy Mosquitto broker via Docker:
 ```bash
 docker-compose up -d
-
-This exposes port 1884 on your host.
+```
+*This exposes port 1884 on your host machine.*
 
 ### 4. Install backend dependencies
 ```bash
@@ -74,30 +80,45 @@ cd backend
 python -m venv venv
 source venv/bin/activate   # or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
+```
 
-### 5. Run the backend
+### 5. Generate Offline Railway Map Data (Required for Map, if static is not available yet)
+To render the neon green railway lines without lagging the browser, we use a static GeoJSON file.
+1. Go to [Overpass Turbo](https://overpass-turbo.eu/).
+2. Paste the following query to extract all Indonesian railways (Heavy rail, MRT, LRT, KRL, Trams):
+   ```overpass
+   [out:json][timeout:900];
+   (
+     way["railway"~"^(rail|light_rail|subway|tram|monorail|funicular|narrow_gauge)$"](-11.0,95.0,6.0,141.0);
+   );
+   out body geom;
+   ```
+3. Click **Export** -> **GeoJSON**.
+4. Save the file as `railway.geojson` and place it inside the `frontend/` folder (or `static/` folder, ensuring the path in `script.js` matches).
+
+### 6. Run the backend
 ```bash
+cd backend
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
+```
 The backend will:
-- Connect to MQTT brokers and subscribe to topics
-- Store panic events into ClickHouse
-- Broadcast real‑time data via WebSocket on ws://localhost:8000/ws
-- Serve REST endpoints at http://localhost:8000/api/...
+- Connect to MQTT brokers and subscribe to topics (if available).
+- Store panic events into ClickHouse (if available).
+- Broadcast real‑time data via WebSocket on `ws://localhost:8000/ws`.
+- Serve REST endpoints at `http://localhost:8000/api/...`.
+- **Serve the Frontend UI directly at `http://localhost:8000`.**
 
-### 6. (Optional) Run the dummy simulator
-If you want to generate fake train data, panic events, and LED updates:
+### 7. Access the Dashboard
+Simply open your web browser and navigate to:
+```text
+http://localhost:8000
+```
+*No separate frontend server (like Live Server or `python -m http.server`) is required. FastAPI handles serving the HTML, CSS, JS, and GeoJSON files automatically.*
+
+### 8. (Optional) Run the dummy simulator
+If you want to generate fake train data, panic events, and LED updates to test the WebSocket streaming:
 ```bash
 cd simulator
 python mqtt_simulator.py
-
-Make sure the simulator’s broker settings point to the same dummy broker.
-
-### 7. Serve the frontend
-Open the frontend/index.html file directly in your browser, or use a simple HTTP server:
-```bash
-cd frontend
-python -m http.server 8080
-
-Then visit http://localhost:8080.
-The frontend will automatically connect to the backend via WebSocket and display the map with live data.
+```
+*Make sure the simulator’s broker settings point to the same dummy broker.*
