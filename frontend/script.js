@@ -10,8 +10,9 @@ const map = L.map('map', {
     preferCanvas: true
 });
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap, © CARTO'
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+    maxZoom: 16
 }).addTo(map);
 
 const jplRenderer = L.svg({ padding: 0.5 });
@@ -166,6 +167,7 @@ function handleWebSocketMessage(msg) {
     if (msg.type === 'jpl_list') {
         msg.data.forEach(jpl => addJPLMarker(jpl));
         renderJPLTable(true);
+
     } else if (msg.type === 'train_list' || msg.type === 'train_batch') {
         msg.data.forEach(train => {
             updateTrain(train);
@@ -174,21 +176,39 @@ function handleWebSocketMessage(msg) {
         if (msg.type === 'train_list' && Object.keys(trainData).length === msg.data.length) {
             renderTrainTable(true);
         }
+
     } else if (msg.type === 'led_list') {
-        msg.data.forEach(led => { ledStatus[led.vtdid] = led; });
+        // 🚀 FIX: Update background status ONLY, do NOT trigger popups for historical data
+        msg.data.forEach(led => {
+            ledStatus[led.vtdid] = led;
+        });
         renderTrainTable(true);
+
     } else if (msg.type === 'train_update') {
         updateTrain(msg.data);
         updateTrainTableRow(msg.data.L_VTDID);
+
     } else if (msg.type === 'led_update') {
+        // 🚀 LIVE EVENT: Show popup ONLY when a new real-time message arrives
         ledStatus[msg.data.vtdid] = msg.data;
         updateTrainMarkerColor(msg.data.vtdid);
         updateTrainTableRow(msg.data.vtdid);
+        addTrainLEDAlert(msg.data);
+
     } else if (msg.type === 'panic_alert') {
-        addAlert(msg.data);
+        // 🚀 LIVE EVENT: Show popup ONLY when a new panic button is pressed
+        addJPLPanicAlert(msg.data);
         renderJPLTable(true);
+
     } else if (msg.type === 'panic_alerts') {
-        msg.data.forEach(alert => addAlert(alert, false));
+        // 🚀 FIX: Restore map marker state for active JPL alerts without spawning popups
+        msg.data.forEach(alertData => {
+            const event = alertData.event || alertData;
+            if (event.jplId) {
+                activeAlerts.add(event.jplId);
+                setJPLState(event.jplId, 'pbpressed');
+            }
+        });
         renderJPLTable(true);
     }
 }
@@ -202,12 +222,8 @@ function createTrainIcon(bodyColor, ringColor) {
     });
 }
 function trainColors(vtdid) {
-    const led = ledStatus[vtdid] || {};
-    let ring = '#ffffff';
-    if (led.ledMerah === '1') ring = '#ff453a';
-    else if (led.ledKuning === '1') ring = '#ffd60a';
-    else if ('ledMerah' in led) ring = '#30d158';
-    return { body: '#ff8c00', ring };
+    const info = getTrainStatusInfo(vtdid);
+    return { body: '#ff8c00', ring: info.ring };
 }
 function updateTrain(data) {
     const vtdid = data.L_VTDID;
@@ -242,8 +258,8 @@ function updateTrainMarkerColor(vtdid) {
     }
 }
 function createTrainPopup(data, led) {
-    const status = led.ledMerah === '1' ? 'Bahaya' : (led.ledKuning === '1' ? 'Hati-hati' : 'Aman');
-    return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${status}`;
+    const info = getTrainStatusInfo(data.L_VTDID);
+    return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${info.status}`;
 }
 function updateTrainScale() {
     const size = Math.max(16, Math.min(32, 8 + map.getZoom() * 2));
@@ -302,76 +318,134 @@ function setJPLState(jplId, state) {
     if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${state.toUpperCase()}`));
 }
 
-// ---- Alert Stack ----
-function addAlert(alertData, autoClose = true) {
-    const alertItem = document.createElement('div');
-    alertItem.className = 'alert-item';
-    alertItem.style.cursor = 'pointer';
-    
-    const event = alertData.event;
-    const jplId = event.jplId;
-    const jpl = jplData[jplId];
-    const caught = alertData.caught_trains || [];
-    activeAlerts.add(jplId);
 
-    let caughtHtml = caught.length > 0 ? '<div style="margin-top:6px;"><strong>Caught trains:</strong><br>' : '<div style="margin-top:6px;color:#888;">No trains caught</div>';
-    if (caught.length > 0) {
-        caught.forEach(t => {
-            const cls = t.danger === 'Bahaya' ? 'danger-bahaya' : 'danger-hati-hati';
-            caughtHtml += `<span class="caught-train ${cls}" data-vtdid="${t.vtdid}">🚆 ${t.vtdid} (${t.danger})</span> `;
-        });
-        caughtHtml += '</div>';
+// ---- Clear/Release JPL Alert Helper ----
+function clearAlertForJPL(jplId) {
+    activeAlerts.delete(jplId);
+
+    // Remove JPL alert popups from alert stack
+    const jplPopups = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
+    jplPopups.forEach(item => item.remove());
+
+    // Reset map marker color, stop pulse, and clear radius circles
+    setJPLState(jplId, 'release');
+    renderJPLTable(true);
+}
+
+function addJPLPanicAlert(alertData) {
+    const event = alertData.event || alertData;
+    const jplId = event.jplId;
+    const eventType = String(event.eventType || '').toUpperCase();
+
+    if (eventType === 'RELEASE') {
+        clearAlertForJPL(jplId);
+        return;
     }
 
-    alertItem.innerHTML = `<div class="alert-header"><span>🚨 ${jplId}</span><button class="alert-close" data-jpl="${jplId}">&times;</button></div><div class="alert-body"><div><strong>${event.eventType}</strong> at ${event.datetime}</div><div>${jpl ? jpl.descript : ''}</div>${caughtHtml}</div>`;
-    
-    // Direct map focus on popup notification click
+    activeAlerts.add(jplId);
+    const jpl = jplData[jplId];
+
+    const existing = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
+    existing.forEach(item => item.remove());
+
+    const alertItem = document.createElement('div');
+    alertItem.className = 'alert-item alert-jpl';
+    alertItem.dataset.jpl = jplId;
+    alertItem.style.cursor = 'pointer';
+    // 🚀 Changed border from red (#ff453a) to orange (#ff9f0a)
+    alertItem.style.borderLeft = '5px solid #ff9f0a'; 
+
+    alertItem.innerHTML = `
+        <div class="alert-header">
+            <!-- 🚀 Changed text color to orange (#ff9f0a) -->
+            <span style="color:#ff9f0a; font-weight:bold;">🚨 PANIC BUTTON: ${jplId}</span>
+            <button class="alert-close" data-jpl="${jplId}">&times;</button>
+        </div>
+        <div class="alert-body">
+            <div><strong>Status:</strong> ${event.eventType || 'PBPRESSED'}</div>
+            <div><strong>Time:</strong> ${event.datetime || new Date().toLocaleTimeString()}</div>
+            <div>${jpl ? jpl.descript : ''}</div>
+        </div>`;
+
     alertItem.addEventListener('click', function(e) {
         if (e.target.closest('.alert-close')) return;
-        
-        // If clicking a caught train tag, zoom to train instead
-        const caughtTrainTag = e.target.closest('.caught-train');
-        if (caughtTrainTag) {
-            const vtdid = caughtTrainTag.dataset.vtdid;
-            const marker = trainMarkers[vtdid];
-            if (marker) {
-                map.setView(marker.getLatLng(), 14);
-                marker.openPopup();
-            }
-            return;
-        }
-
-        // Direct to JPL location on map & open popup
-        const j = jplData[jplId];
-        if (j && j.latitude != null && j.longitude != null) {
-            map.setView([j.latitude, j.longitude], 14);
-            if (jplMarkers[jplId]) {
-                jplMarkers[jplId].openPopup();
-            }
+        if (jpl && jpl.latitude != null && jpl.longitude != null) {
+            map.setView([jpl.latitude, jpl.longitude], 14);
+            if (jplMarkers[jplId]) jplMarkers[jplId].openPopup();
         }
     });
 
     alertItem.querySelector('.alert-close').addEventListener('click', function(e) {
         e.stopPropagation();
-        removeAlertItem(this.closest('.alert-item'));
+        clearAlertForJPL(jplId);
     });
 
     document.getElementById('alert-stack').appendChild(alertItem);
     setJPLState(jplId, 'pbpressed');
-    if (autoClose) alertItem._timeout = setTimeout(() => removeAlertItem(alertItem), 10000);
 }
 
-function removeAlertItem(item) {
-    if (item._timeout) clearTimeout(item._timeout);
-    const jplId = item.querySelector('.alert-close').dataset.jpl;
-    item.remove();
-    const remaining = document.querySelectorAll(`.alert-item .alert-close[data-jpl="${jplId}"]`);
-    if (remaining.length === 0) {
-        activeAlerts.delete(jplId);
-        setJPLState(jplId, 'release');
-        renderJPLTable(true);
+// ---- 3. Train LED Alert Popup (Yellow / Red according to VTDID) ----
+function addTrainLEDAlert(led) {
+    const vtdid = led.vtdid || led.L_VTDID;
+    if (!vtdid) return;
+
+    // Strict string/number check
+    const isRed = String(led.ledMerah) === '1';
+    const isYellow = String(led.ledKuning) === '1';
+
+    // If both LEDs are 0, train is safe — clear any active popup for this train
+    if (!isRed && !isYellow) {
+        const existing = document.querySelectorAll(`.alert-item[data-vtdid="${vtdid}"]`);
+        existing.forEach(item => item.remove());
+        return;
     }
+
+    const train = trainData[vtdid] || {};
+    const statusText = isRed ? 'BAHAYA' : 'HATI-HATI';
+    const accentColor = isRed ? '#ff453a' : '#ffd60a';
+    const bgBadgeColor = isRed ? 'rgba(255, 69, 58, 0.2)' : 'rgba(255, 214, 10, 0.2)';
+
+    const alertItem = document.createElement('div');
+    alertItem.className = 'alert-item alert-train';
+    alertItem.dataset.vtdid = vtdid;
+    alertItem.style.cursor = 'pointer';
+    alertItem.style.borderLeft = `5px solid ${accentColor}`;
+
+    alertItem.innerHTML = `
+        <div class="alert-header">
+            <span style="color:${accentColor}; font-weight:bold;">
+                🚆 TRAIN WARNING: ${vtdid}
+            </span>
+            <button class="alert-close" data-vtdid="${vtdid}">&times;</button>
+        </div>
+        <div class="alert-body">
+            <div style="margin-bottom:6px;">
+                <span style="background:${bgBadgeColor}; color:${accentColor}; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:11px; text-transform:uppercase;">
+                    ${statusText}
+                </span>
+            </div>
+            <div><strong>Speed:</strong> ${train.L_SPEED || '0'} km/h</div>
+            <div><strong>Location:</strong> ${train.L_LOCATION || [train.L_KECAMATAN, train.L_KABUPATEN].filter(Boolean).join(', ') || 'N/A'}</div>
+        </div>`;
+
+    // Click popup to focus map on Train
+    alertItem.addEventListener('click', function(e) {
+        if (e.target.closest('.alert-close')) return;
+        const marker = trainMarkers[vtdid];
+        if (marker) {
+            map.setView(marker.getLatLng(), 14);
+            marker.openPopup();
+        }
+    });
+
+    alertItem.querySelector('.alert-close').addEventListener('click', function(e) {
+        e.stopPropagation();
+        alertItem.remove();
+    });
+
+    document.getElementById('alert-stack').appendChild(alertItem);
 }
+
 
 // ==========================================
 // INFINITE SCROLL TABLE RENDERING
@@ -450,21 +524,31 @@ function renderTrainTable(reset = false) {
     tbody.insertAdjacentHTML('beforeend', html);
     trainVisibleCount += nextBatchIDs.length;
 }
+function getTrainStatusInfo(vtdid) {
+    const led = ledStatus[vtdid] || {};
+    if (led.ledMerah === '1') {
+        return { status: 'Bahaya', statusClass: 'status-bahaya', ring: '#ff453a' };
+    }
+    if (led.ledKuning === '1') {
+        return { status: 'Hati-hati', statusClass: 'status-hati-hati', ring: '#ffd60a' };
+    }
+    // Default / Normal state (both 0 or no LED data received yet)
+    return { status: 'Aman', statusClass: 'status-aman', ring: '#30d158' };
+}
 
 // Live updates for Train Table
 function updateTrainTableRow(vtdid) {
     const tr = document.querySelector(`#train-table tbody tr[data-vtdid="${vtdid}"]`);
     if (!tr) return; 
-    const train = trainData[vtdid]; const led = ledStatus[vtdid] || {};
-    let status = 'Aman', statusClass = 'status-aman';
-    if (led.ledMerah === '1') { status = 'Bahaya'; statusClass = 'status-bahaya'; }
-    else if (led.ledKuning === '1') { status = 'Hati-hati'; statusClass = 'status-hati-hati'; }
+    const train = trainData[vtdid] || {};
+    const info = getTrainStatusInfo(vtdid);
     const location = [train.L_KECAMATAN, train.L_KABUPATEN, train.L_PROPINSI].filter(Boolean).join(', ');
+    
     const cells = tr.children;
     cells[3].textContent = train.L_SPEED || '0';
     cells[4].textContent = location || train.L_LOCATION || '';
-    cells[6].textContent = status;
-    cells[6].className = statusClass;
+    cells[6].textContent = info.status;
+    cells[6].className = info.statusClass;
 }
 
 // --- Event Log Table (API Pagination) ---
@@ -475,7 +559,7 @@ function fetchLogs(reset = true) {
     if (logsExhausted) return;
 
     logsLoading = true;
-    showLoadingIndicator(tbody, 9);
+    showLoadingIndicator(tbody, 17);
 
     fetch(`${API_BASE}/logs?limit=50&offset=${logOffset}`)
         .then(res => res.json())
@@ -486,10 +570,23 @@ function fetchLogs(reset = true) {
             if (logs.length < 50) logsExhausted = true;
             const html = logs.map(log => `
                 <tr class="data-row" data-funcloc="${log.funcloc || ''}">
-                    <td>${log.id ? log.id.slice(0,5)+'...' : ''}</td><td>${log.event_time || ''}</td>
-                    <td>${log.event_type || ''}</td><td>${log.trigger_type || ''}</td>
-                    <td>${log.device_id || ''}</td><td>${log.funcloc || ''}</td>
-                    <td>${log.vtdid || ''}</td><td>${log.distance_m || ''}</td><td>${log.loco_speed || ''}</td>
+                    <td>${log.id ? String(log.id).slice(0, 5) + '...' : ''}</td>
+                    <td>${log.event_time || ''}</td>
+                    <td>${log.event_type || ''}</td>
+                    <td>${log.trigger_type || ''}</td>
+                    <td>${log.device_id || ''}</td>
+                    <td>${log.funcloc || ''}</td>
+                    <td>${log.jpl_lat ?? ''}</td>
+                    <td>${log.jpl_lon ?? ''}</td>
+                    <td>${log.vtdid || ''}</td>
+                    <td>${log.loco_lat ?? ''}</td>
+                    <td>${log.loco_lon ?? ''}</td>
+                    <td>${log.distance_m ?? ''}</td>
+                    <td>${log.previous_alert || ''}</td>
+                    <td>${log.alert_changed ?? ''}</td>
+                    <td>${log.release_count ?? ''}</td>
+                    <td>${log.loco_speed ?? ''}</td>
+                    <td>${log.loco_location || ''}</td>
                 </tr>`).join('');
             tbody.insertAdjacentHTML('beforeend', html);
         })

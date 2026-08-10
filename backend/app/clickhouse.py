@@ -32,7 +32,6 @@ class ClickHouseDB:
         for row in rows:
             lat = row[2]
             lon = row[3]
-            # Skip if lat or lon is None, or string 'EMPTY' or empty
             if lat is None or lon is None:
                 continue
             if isinstance(lat, str) and lat.strip().upper() in ('', 'EMPTY', 'NULL'):
@@ -52,3 +51,22 @@ class ClickHouseDB:
                 descript=row[4]
             ))
         return result
+
+    def insert_panic_event(self, event: dict):
+        """Insert incoming panic event into ClickHouse table safely."""
+        try:
+            query = f"""
+                INSERT INTO {Config.CH_DATABASE}.{Config.CH_TABLE} 
+                (id, event_time, event_type, device_id, funcloc) 
+                VALUES
+            """
+            data = [{
+                'id': str(event.get('eventId', uuid.uuid4())),
+                'event_time': datetime.now(),
+                'event_type': str(event.get('eventType', '')),
+                'device_id': str(event.get('deviceId', '')),
+                'funcloc': str(event.get('jplId', ''))
+            }]
+            self.client.execute(query, data)
+        except Exception as e:
+            print(f"Failed to insert panic event into ClickHouse: {e}")

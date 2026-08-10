@@ -136,34 +136,41 @@ async def lifespan(app: FastAPI):
     # 2. Define the MQTT Callback
     def on_mqtt_message(payload):
         if 'L_VTDID' in payload:
-            # Train update: store + coalesce (NO immediate broadcast)
             vtdid = payload['L_VTDID']
             train_data[vtdid] = payload
             pending_train_updates[vtdid] = payload
+
         elif 'eventType' in payload:
             event = payload
             try:
                 db.insert_panic_event(event)
             except Exception as e:
                 logger.error(f"Failed to insert panic event: {e}")
+
             jpl_id = event.get('jplId')
-            jpl = next((j for j in jpl_master if j.function_loc == jpl_id), None)
-            if jpl and jpl.latitude and jpl.longitude:
-                caught_trains = get_train_caught(jpl.latitude, jpl.longitude)
+            event_type = str(event.get('eventType', '')).upper()
+
+            # If event is RELEASE, remove active alert from memory list
+            if event_type == 'RELEASE':
+                global panic_alerts
+                panic_alerts = [a for a in panic_alerts if a.get('event', {}).get('jplId') != jpl_id]
             else:
-                caught_trains = []
-            alert = {
-                "event": event,
-                "caught_trains": caught_trains,
-                "timestamp": datetime.now().isoformat()
-            }
-            panic_alerts.append(alert)
-            if len(panic_alerts) > 50:
-                panic_alerts.pop(0)
+                jpl = next((j for j in jpl_master if j.function_loc == jpl_id), None)
+                caught_trains = get_train_caught(jpl.latitude, jpl.longitude) if (jpl and jpl.latitude and jpl.longitude) else []
+                alert = {
+                    "event": event,
+                    "caught_trains": caught_trains,
+                    "timestamp": datetime.now().isoformat()
+                }
+                panic_alerts.append(alert)
+                if len(panic_alerts) > 50:
+                    panic_alerts.pop(0)
+
             asyncio.run_coroutine_threadsafe(
-                manager.broadcast(json.dumps({"type": "panic_alert", "data": alert})),
+                manager.broadcast(json.dumps({"type": "panic_alert", "data": event})),
                 main_loop
             )
+
         elif 'ledMerah' in payload:
             vtdid = payload.get('vtdid')
             if vtdid:
