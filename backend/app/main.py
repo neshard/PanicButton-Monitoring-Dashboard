@@ -1,4 +1,5 @@
 import os
+import math
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 import asyncio
@@ -9,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import List, Dict, Optional
 from datetime import datetime
-from .config import Config
 from .clickhouse import ClickHouseDB
 from .mqtt_client import MQTTClientManager
 from .models import JPLMaster, TrainLocation, LEDStatus, PanicEvent
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Global state
 jpl_master: List[JPLMaster] = []
+jpl_master_serialized: List[dict] = []
+jpl_master_json: str = json.dumps({"type": "jpl_list", "data": []})
 main_loop = None
 broadcaster_task = None
 
@@ -43,21 +45,28 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
-        dead = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except Exception as e:
-                logger.error(f"Broadcast error: {e}")
-                dead.append(connection)
+        if not self.active_connections:
+            return
+        # Fan out sends concurrently instead of one-by-one so a slow client
+        # doesn't delay delivery to everyone else.
+        results = await asyncio.gather(
+            *(connection.send_text(message) for connection in self.active_connections),
+            return_exceptions=True
+        )
+        dead = [
+            conn for conn, result in zip(self.active_connections, results)
+            if isinstance(result, Exception)
+        ]
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Broadcast error: {result}")
         # Clean up dead connections so errors don't repeat forever
         for conn in dead:
             self.disconnect(conn)
 
     async def send_initial_data(self, websocket: WebSocket):
         if jpl_master:
-            data = {"type": "jpl_list", "data": [j.dict() for j in jpl_master]}
-            await websocket.send_text(json.dumps(data))
+            await websocket.send_text(jpl_master_json)
         if train_data:
             data = {"type": "train_list", "data": list(train_data.values())}
             await websocket.send_text(json.dumps(data))
@@ -77,7 +86,6 @@ mqtt_manager = None
 
 def get_train_caught(jpl_lat, jpl_lon, radius_km=3.0):
     """Return list of trains within radius that have LED status."""
-    import math
     caught = []
     for vtdid, train in train_data.items():
         if 'L_LAT' not in train or 'L_LON' not in train:
@@ -121,7 +129,7 @@ async def broadcast_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global jpl_master, mqtt_manager, main_loop, broadcaster_task
+    global jpl_master, jpl_master_serialized, jpl_master_json, mqtt_manager, main_loop, broadcaster_task
     main_loop = asyncio.get_running_loop()
 
     # 1. Fetch JPL Master Data (non-blocking, with fallback)
@@ -132,6 +140,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to load JPL master: {e}")
         jpl_master = []
+    # jpl_master is static after startup, so serialize it once instead of
+    # re-running .dict() on every websocket connect / /api/jpl request.
+    jpl_master_serialized = [j.dict() for j in jpl_master]
+    jpl_master_json = json.dumps({"type": "jpl_list", "data": jpl_master_serialized})
 
     # 2. Define the MQTT Callback
     def on_mqtt_message(payload):
@@ -154,6 +166,7 @@ async def lifespan(app: FastAPI):
             if event_type == 'RELEASE':
                 global panic_alerts
                 panic_alerts = [a for a in panic_alerts if a.get('event', {}).get('jplId') != jpl_id]
+                broadcast_payload = event
             else:
                 jpl = next((j for j in jpl_master if j.function_loc == jpl_id), None)
                 caught_trains = get_train_caught(jpl.latitude, jpl.longitude) if (jpl and jpl.latitude and jpl.longitude) else []
@@ -165,9 +178,12 @@ async def lifespan(app: FastAPI):
                 panic_alerts.append(alert)
                 if len(panic_alerts) > 50:
                     panic_alerts.pop(0)
+                # Include caught_trains so the dashboard can show how many trains
+                # are affected by this event, same shape as the panic_alerts restore list.
+                broadcast_payload = alert
 
             asyncio.run_coroutine_threadsafe(
-                manager.broadcast(json.dumps({"type": "panic_alert", "data": event})),
+                manager.broadcast(json.dumps({"type": "panic_alert", "data": broadcast_payload})),
                 main_loop
             )
 
@@ -230,20 +246,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.get("/api/logs")
 async def get_logs(jplId: str = None, limit: int = 50, offset: int = 0):
-    # Server-side pagination + non-blocking DB call
-    def fetch_logs_sync():
-        query = (
-            f"SELECT id, event_time, event_type, trigger_type, device_id, "
-            f"funcloc, jpl_lat, jpl_lon, vtdid, loco_lat, loco_lon, distance_m, "
-            f"previous_alert, alert_changed, release_count, loco_speed, loco_location "
-            f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE}"
-        )
-        if jplId:
-            query += f" WHERE funcloc = '{jplId}'"
-        query += f" ORDER BY event_time DESC LIMIT {limit} OFFSET {offset}"
-        return db.client.execute(query)
-
-    rows = await asyncio.to_thread(fetch_logs_sync)
+    # Server-side pagination + non-blocking DB call, parameterized to avoid SQL injection
+    rows = await asyncio.to_thread(db.fetch_logs, jplId, limit, offset)
 
     logs = []
     for row in rows:
@@ -271,7 +275,17 @@ async def get_logs(jplId: str = None, limit: int = 50, offset: int = 0):
 
 @app.get("/api/jpl")
 async def get_jpl():
-    return [j.dict() for j in jpl_master]
+    return jpl_master_serialized
+
+
+@app.get("/api/stats/alerts-today")
+async def get_alerts_today():
+    try:
+        count = await asyncio.to_thread(db.count_alerts_today)
+    except Exception as e:
+        logger.error(f"Failed to count today's alerts: {e}")
+        count = 0
+    return {"count": count}
 
 
 # ==========================================

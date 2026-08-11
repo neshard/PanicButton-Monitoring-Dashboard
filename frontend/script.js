@@ -2,6 +2,22 @@
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 const API_BASE = '/api';
 
+// ---- Status Label Normalization (single language: Bahasa Indonesia, Title Case) ----
+const STATUS_LABELS = {
+    'release': 'Aman', 'aman': 'Aman', 'safe': 'Aman',
+    'pbpressed': 'Bahaya', 'bahaya': 'Bahaya', 'danger': 'Bahaya',
+    'hati-hati': 'Hati-hati', 'hati hati': 'Hati-hati', 'perhatian': 'Hati-hati', 'caution': 'Hati-hati', 'warning': 'Hati-hati'
+};
+const STATUS_CLASS = { 'Aman': 'status-aman', 'Hati-hati': 'status-hati-hati', 'Bahaya': 'status-bahaya' };
+function formatStatusLabel(raw) {
+    if (!raw) return '';
+    const key = String(raw).trim().toLowerCase();
+    return STATUS_LABELS[key] || (key.charAt(0).toUpperCase() + key.slice(1));
+}
+function statusClassFor(label) {
+    return STATUS_CLASS[label] || '';
+}
+
 // ---- Map Setup ----
 const map = L.map('map', {
     center: [-2.5, 118.0],
@@ -26,6 +42,8 @@ let ledStatus = {};
 let jplRadiusLayers = {};
 let jplPulseIntervals = {};
 let activeAlerts = new Set();
+let jplCaughtTrains = {}; // jplId -> array of vtdid caught by that JPL's active alert
+let alertsToday = 0;
 
 // Infinite Scroll State
 let sortedJPLIDs = [];
@@ -37,6 +55,7 @@ let logsLoading = false;
 let logsExhausted = false;
 let currentView = 'jpl';
 let isRenderingBatch = false;
+let initialFocusDone = false;
 
 // ---- Sidebar Toggle ----
 const hamburger = document.getElementById('hamburger');
@@ -56,6 +75,13 @@ function closeSidebarFn() {
 hamburger.addEventListener('click', openSidebar);
 closeSidebar.addEventListener('click', closeSidebarFn);
 
+// ---- Info / Legend Widget Toggle (panel pulls up out of the toggle box) ----
+const infoWidget = document.getElementById('info-widget');
+const infoToggle = document.getElementById('info-toggle');
+const infoPanelClose = document.getElementById('info-panel-close');
+infoToggle.addEventListener('click', () => infoWidget.classList.toggle('open'));
+infoPanelClose.addEventListener('click', () => infoWidget.classList.remove('open'));
+
 // ---- Resize Sidebar ----
 const resizeHandle = document.createElement('div');
 resizeHandle.className = 'resize-handle';
@@ -63,6 +89,7 @@ sidebarContent.appendChild(resizeHandle);
 let isResizing = false, startX, startWidth;
 resizeHandle.addEventListener('mousedown', function(e) {
     isResizing = true; startX = e.clientX; startWidth = sidebarContent.offsetWidth;
+    resizeHandle.classList.add('resizing');
     document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
 });
 document.addEventListener('mousemove', function(e) {
@@ -74,7 +101,11 @@ document.addEventListener('mousemove', function(e) {
     }
 });
 document.addEventListener('mouseup', function() {
-    if (isResizing) { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; }
+    if (isResizing) {
+        isResizing = false;
+        resizeHandle.classList.remove('resizing');
+        document.body.style.cursor = ''; document.body.style.userSelect = '';
+    }
 });
 
 // ---- Tab Switching ----
@@ -152,21 +183,60 @@ function setupTableDelegation() {
 }
 setupTableDelegation();
 
+// ---- Top Bar: Backend Status + Live Stats ----
+const backendStatusDot = document.getElementById('backend-status-dot');
+const backendStatusText = document.getElementById('backend-status-text');
+function setBackendStatus(online) {
+    backendStatusDot.classList.toggle('status-online', online);
+    backendStatusDot.classList.toggle('status-offline', !online);
+    backendStatusText.textContent = online ? 'Online' : 'Offline';
+}
+
+function updateTopBarStats() {
+    document.getElementById('stat-jpl-active').textContent = activeAlerts.size;
+
+    const affectedTrains = new Set();
+    Object.values(jplCaughtTrains).forEach(vtdids => vtdids.forEach(v => affectedTrains.add(v)));
+    document.getElementById('stat-train-affected').textContent = affectedTrains.size;
+
+    document.getElementById('stat-alerts-today').textContent = alertsToday;
+}
+
+function fetchAlertsToday() {
+    fetch(`${API_BASE}/stats/alerts-today`)
+        .then(res => res.json())
+        .then(data => { alertsToday = data.count || 0; updateTopBarStats(); })
+        .catch(err => console.warn('Failed to fetch alerts-today:', err));
+}
+fetchAlertsToday();
+setInterval(fetchAlertsToday, 5 * 60 * 1000); // periodic resync so the daily reset (midnight) self-corrects without a page reload
+
 // ---- WebSocket ----
 let ws = null;
 function connectWebSocket() {
     ws = new WebSocket(WS_URL);
-    ws.onopen = () => console.log('WS connected');
+    ws.onopen = () => { console.log('WS connected'); setBackendStatus(true); };
     ws.onmessage = (event) => handleWebSocketMessage(JSON.parse(event.data));
-    ws.onclose = () => { console.warn('WS closed, reconnecting...'); setTimeout(connectWebSocket, 3000); };
-    ws.onerror = (err) => { console.error('WS error', err); ws.close(); };
+    ws.onclose = () => { console.warn('WS closed, reconnecting...'); setBackendStatus(false); setTimeout(connectWebSocket, 3000); };
+    ws.onerror = (err) => { console.error('WS error', err); setBackendStatus(false); ws.close(); };
 }
 connectWebSocket();
+
+// ---- Initial Auto-Focus (show the whole Java island, where JPL + Locotrack activity is concentrated) ----
+const JAVA_BOUNDS = L.latLngBounds([-8.8, 105.0], [-5.7, 114.6]);
+function autoFocusOnDensity() {
+    if (initialFocusDone) return;
+    if (Object.keys(jplData).length === 0 && Object.keys(trainData).length === 0) return; // wait for data
+
+    map.fitBounds(JAVA_BOUNDS, { padding: [20, 20] });
+    initialFocusDone = true;
+}
 
 function handleWebSocketMessage(msg) {
     if (msg.type === 'jpl_list') {
         msg.data.forEach(jpl => addJPLMarker(jpl));
         renderJPLTable(true);
+        autoFocusOnDensity();
 
     } else if (msg.type === 'train_list' || msg.type === 'train_batch') {
         msg.data.forEach(train => {
@@ -176,6 +246,7 @@ function handleWebSocketMessage(msg) {
         if (msg.type === 'train_list' && Object.keys(trainData).length === msg.data.length) {
             renderTrainTable(true);
         }
+        autoFocusOnDensity();
 
     } else if (msg.type === 'led_list') {
         // 🚀 FIX: Update background status ONLY, do NOT trigger popups for historical data
@@ -206,24 +277,37 @@ function handleWebSocketMessage(msg) {
             const event = alertData.event || alertData;
             if (event.jplId) {
                 activeAlerts.add(event.jplId);
+                jplCaughtTrains[event.jplId] = (alertData.caught_trains || []).map(c => c.vtdid);
                 setJPLState(event.jplId, 'pbpressed');
             }
         });
         renderJPLTable(true);
+        updateTopBarStats();
     }
 }
 
 // ---- Train Map Markers ----
+function getTrainIconSize() {
+    return Math.max(16, Math.min(32, 8 + map.getZoom() * 2));
+}
 function createTrainIcon(bodyColor, ringColor) {
+    const w = getTrainIconSize();
+    const h = Math.round(w * 1.333);
     return L.divIcon({
         className: 'train-icon',
-        html: `<div class="train-dot" style="background:${bodyColor}; border-color:${ringColor};">🚆</div>`,
-        iconSize: [20, 20], iconAnchor: [10, 10]
+        html: `<div class="train-pin-wrap" style="width:${w}px;height:${h}px;">
+            <svg class="train-pin-svg" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 1C6.1 1 1.3 5.8 1.3 11.7c0 8.3 10.7 18.6 10.7 18.6s10.7-10.3 10.7-18.6C22.7 5.8 17.9 1 12 1z" fill="${bodyColor}" stroke="${ringColor}" stroke-width="2.5"/>
+            </svg>
+            <span class="train-pin-icon" style="font-size:${Math.round(w * 0.42)}px;">🚆</span>
+        </div>`,
+        // Anchored at the pin's tip (bottom-center) so it stands exactly on its coordinate, not floating above it.
+        iconSize: [w, h], iconAnchor: [w / 2, h]
     });
 }
 function trainColors(vtdid) {
     const info = getTrainStatusInfo(vtdid);
-    return { body: '#ff8c00', ring: info.ring };
+    return { body: 'rgb(255, 249, 179)', ring: info.ring };
 }
 function updateTrain(data) {
     const vtdid = data.L_VTDID;
@@ -262,8 +346,11 @@ function createTrainPopup(data, led) {
     return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${info.status}`;
 }
 function updateTrainScale() {
-    const size = Math.max(16, Math.min(32, 8 + map.getZoom() * 2));
-    document.getElementById('map').style.setProperty('--train-size', size + 'px');
+    Object.keys(trainMarkers).forEach(vtdid => {
+        const marker = trainMarkers[vtdid];
+        const c = trainColors(vtdid);
+        marker.setIcon(createTrainIcon(c.body, c.ring));
+    });
 }
 map.on('zoomend', updateTrainScale);
 updateTrainScale();
@@ -276,9 +363,9 @@ function addJPLMarker(jpl) {
     if (lat == null || lon == null) return;
     jplData[id] = jpl;
     const marker = L.circleMarker([lat, lon], {
-        renderer: jplRenderer, radius: 6, fillColor: '#30d158', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8
+        renderer: jplRenderer, radius: 6, fillColor: '#0a84ff', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8
     }).addTo(map);
-    marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">RELEASE</span>`);
+    marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">${formatStatusLabel('release')}</span>`);
     marker.on('click', () => map.setView([lat, lon], 14));
     jplMarkers[id] = marker;
 }
@@ -315,13 +402,14 @@ function setJPLState(jplId, state) {
     if (state === 'pbpressed') { marker.setStyle({ fillColor: '#ff453a' }); startPulse(jplId); } else { stopPulse(jplId); }
     updateRadiusCircles(jplId, state);
     const popup = marker.getPopup();
-    if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${state.toUpperCase()}`));
+    if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${formatStatusLabel(state)}`));
 }
 
 
 // ---- Clear/Release JPL Alert Helper ----
 function clearAlertForJPL(jplId) {
     activeAlerts.delete(jplId);
+    delete jplCaughtTrains[jplId];
 
     // Remove JPL alert popups from alert stack
     const jplPopups = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
@@ -330,6 +418,7 @@ function clearAlertForJPL(jplId) {
     // Reset map marker color, stop pulse, and clear radius circles
     setJPLState(jplId, 'release');
     renderJPLTable(true);
+    updateTopBarStats();
 }
 
 function addJPLPanicAlert(alertData) {
@@ -343,6 +432,9 @@ function addJPLPanicAlert(alertData) {
     }
 
     activeAlerts.add(jplId);
+    jplCaughtTrains[jplId] = (alertData.caught_trains || []).map(c => c.vtdid);
+    alertsToday++;
+    updateTopBarStats();
     const jpl = jplData[jplId];
 
     const existing = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
@@ -362,7 +454,7 @@ function addJPLPanicAlert(alertData) {
             <button class="alert-close" data-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">
-            <div><strong>Status:</strong> ${event.eventType || 'PBPRESSED'}</div>
+            <div><strong>Status:</strong> ${formatStatusLabel(event.eventType || 'pbpressed')}</div>
             <div><strong>Time:</strong> ${event.datetime || new Date().toLocaleTimeString()}</div>
             <div>${jpl ? jpl.descript : ''}</div>
         </div>`;
@@ -377,11 +469,33 @@ function addJPLPanicAlert(alertData) {
 
     alertItem.querySelector('.alert-close').addEventListener('click', function(e) {
         e.stopPropagation();
-        clearAlertForJPL(jplId);
+        // Closing the notification only dismisses the card — it must NOT clear the
+        // PB event state (marker/pulse/danger radius). That only ends on a real
+        // RELEASE event from the backend, handled above via clearAlertForJPL().
+        dismissAlertNotification(jplId);
     });
 
     document.getElementById('alert-stack').appendChild(alertItem);
     setJPLState(jplId, 'pbpressed');
+
+    // Auto zoom to the affected area so the monitor sees it, but stay wide enough
+    // to keep context around the danger radius rather than zooming in tight.
+    if (jpl && jpl.latitude != null && jpl.longitude != null) {
+        const radiusLayers = jplRadiusLayers[jplId];
+        const warningCircle = radiusLayers && radiusLayers[1]; // yellow, 3000m — wider than the red danger circle
+        if (warningCircle) {
+            map.fitBounds(warningCircle.getBounds(), { maxZoom: 13, padding: [40, 40] });
+        } else {
+            map.setView([jpl.latitude, jpl.longitude], 13);
+        }
+        if (jplMarkers[jplId]) jplMarkers[jplId].openPopup();
+    }
+}
+
+// ---- Dismiss a notification card only, without touching the underlying PB alert state ----
+function dismissAlertNotification(jplId) {
+    const jplPopups = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
+    jplPopups.forEach(item => item.remove());
 }
 
 // ---- 3. Train LED Alert Popup (Yellow / Red according to VTDID) ----
@@ -469,8 +583,8 @@ function renderJPLTable(reset = false) {
 
     const html = nextBatchIDs.map(id => {
         const jpl = jplData[id] || {};
-        const status = activeAlerts.has(id) ? 'PBPRESSED' : 'RELEASE';
-        const statusClass = status === 'PBPRESSED' ? 'status-pbpressed' : 'status-release';
+        const status = formatStatusLabel(activeAlerts.has(id) ? 'pbpressed' : 'release');
+        const statusClass = statusClassFor(status);
         return `
             <tr class="data-row ${statusClass}" data-jpl="${id}">
                 <td>${id}</td><td>${jpl.ba || ''}</td><td>${jpl.descript || ''}</td>
@@ -572,8 +686,8 @@ function fetchLogs(reset = true) {
                 <tr class="data-row" data-funcloc="${log.funcloc || ''}">
                     <td>${log.id ? String(log.id).slice(0, 5) + '...' : ''}</td>
                     <td>${log.event_time || ''}</td>
-                    <td>${log.event_type || ''}</td>
-                    <td>${log.trigger_type || ''}</td>
+                    <td class="${statusClassFor(formatStatusLabel(log.event_type))}">${formatStatusLabel(log.event_type)}</td>
+                    <td class="${statusClassFor(formatStatusLabel(log.trigger_type))}">${formatStatusLabel(log.trigger_type)}</td>
                     <td>${log.device_id || ''}</td>
                     <td>${log.funcloc || ''}</td>
                     <td>${log.jpl_lat ?? ''}</td>
@@ -582,7 +696,7 @@ function fetchLogs(reset = true) {
                     <td>${log.loco_lat ?? ''}</td>
                     <td>${log.loco_lon ?? ''}</td>
                     <td>${log.distance_m ?? ''}</td>
-                    <td>${log.previous_alert || ''}</td>
+                    <td>${formatStatusLabel(log.previous_alert)}</td>
                     <td>${log.alert_changed ?? ''}</td>
                     <td>${log.release_count ?? ''}</td>
                     <td>${log.loco_speed ?? ''}</td>
@@ -610,8 +724,8 @@ function hideLoadingIndicator(tbody) {
 fetch('/static/railway.geojson')
     .then(res => res.ok ? res.json() : Promise.reject("Failed to load geojson"))
     .then(data => {
-        L.geoJSON(data, { style: { color: '#00e5ff', weight: 8, opacity: 0.3, lineCap: 'round', lineJoin: 'round' } }).addTo(map);
-        L.geoJSON(data, { style: { color: 'rgb(199, 236, 199)', weight: 2, opacity: 0.9, lineCap: 'round', lineJoin: 'round' } }).addTo(map);
+        L.geoJSON(data, { style: { color: '#63a0f5', weight: 5, opacity: 0.22, lineCap: 'round', lineJoin: 'round' } }).addTo(map);
+        L.geoJSON(data, { style: { color: '#63a0f5', weight: 2, opacity: 0.85, lineCap: 'round', lineJoin: 'round' } }).addTo(map);
         console.log("Neon Railways Loaded!");
     })
     .catch(err => console.error("Railway load failed:", err));

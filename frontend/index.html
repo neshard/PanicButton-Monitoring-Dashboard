@@ -10,6 +10,31 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <!-- Top Bar -->
+    <div id="top-bar">
+        <div id="top-bar-left">
+            <span id="top-bar-title">Railway Panic Monitor</span>
+            <span id="backend-status" title="Status koneksi backend">
+                <span id="backend-status-dot" class="status-dot"></span>
+                <span id="backend-status-text">Menghubungkan...</span>
+            </span>
+        </div>
+        <div id="top-bar-stats">
+            <div class="stat-item stat-jpl">
+                <span class="stat-label">JPL Aktif</span>
+                <span class="stat-value" id="stat-jpl-active">0</span>
+            </div>
+            <div class="stat-item stat-train">
+                <span class="stat-label">Kereta Terpengaruh</span>
+                <span class="stat-value" id="stat-train-affected">0</span>
+            </div>
+            <div class="stat-item stat-alert">
+                <span class="stat-label">Alert Hari Ini</span>
+                <span class="stat-value" id="stat-alerts-today">0</span>
+            </div>
+        </div>
+    </div>
+
     <!-- Sidebar -->
     <div id="sidebar">
         <div class="hamburger" id="hamburger">
@@ -17,7 +42,6 @@
         </div>
         <div id="sidebar-content" class="hidden">
             <div id="sidebar-header">
-                <span>Railway Panic Monitor</span>
                 <button id="close-sidebar">&times;</button>
             </div>
             <div id="tabs">
@@ -70,6 +94,46 @@
 
     <div id="alert-stack"></div>
     <div id="map"></div>
+
+    <!-- Info / Legend Widget: toggle box (train + JPL icons) with panel that pulls up from it -->
+    <div id="info-widget">
+        <div id="info-panel-wrap">
+            <div id="info-panel">
+                <div id="info-panel-header">
+                    <span>Information</span>
+                    <button id="info-panel-close">&times;</button>
+                </div>
+                <div id="info-panel-body">
+                    <div class="info-section">
+                        <h4>Titik JPL (Perlintasan)</h4>
+                        <div class="info-row"><span class="legend-dot" style="background:#0a84ff;"></span> Biru - kondisi aman</div>
+                        <div class="info-row"><span class="legend-dot pulse-dot" style="background:#ff453a;"></span> Merah berkedip - tombol panic ditekan (bahaya)</div>
+                        <div class="info-row"><span class="legend-ring" style="border-color:#ff453a;"></span> Lingkaran merah (&plusmn;1.1 km) - zona bahaya</div>
+                        <div class="info-row"><span class="legend-ring" style="border-color:#ff9f0a;"></span> Lingkaran kuning (&plusmn;3 km) - zona waspada</div>
+                    </div>
+                    <div class="info-section">
+                        <h4>Locotrack (Kereta)</h4>
+                        <div class="info-row"><span class="legend-dot" style="background:#30d158;"></span> Cincin hijau - aman</div>
+                        <div class="info-row"><span class="legend-dot" style="background:#ffd60a;"></span> Cincin kuning - hati-hati</div>
+                        <div class="info-row"><span class="legend-dot" style="background:#ff453a;"></span> Cincin merah - bahaya</div>
+                    </div>
+                    <div class="info-section">
+                        <h4>Garis Rel</h4>
+                        <div class="info-row"><span class="legend-line"></span> Jalur rel kereta api</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <button id="info-toggle" title="Information">
+            <span class="info-toggle-item">
+                <span class="info-toggle-icon">&#128646;</span> Locotrack
+            </span>
+            <span class="info-toggle-sep"></span>
+            <span class="info-toggle-item">
+                <span class="legend-dot" style="background:#0a84ff;"></span> JPL
+            </span>
+        </button>
+    </div>
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

@@ -1,9 +1,14 @@
+import logging
+import threading
 import uuid
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Any, Optional
 from clickhouse_driver import Client
 from .config import Config
 from .models import JPLMaster
+
+logger = logging.getLogger(__name__)
+
 
 class ClickHouseDB:
     def __init__(self):
@@ -14,6 +19,29 @@ class ClickHouseDB:
             password=Config.CH_PASSWORD,
             database=Config.CH_DATABASE
         )
+        # clickhouse_driver.Client wraps a single TCP connection and is not
+        # thread-safe. It's called concurrently from MQTT callback threads
+        # (insert_panic_event) and the FastAPI threadpool (asyncio.to_thread),
+        # so serialize access to avoid interleaved reads/writes on the socket.
+        self._lock = threading.Lock()
+
+    def _execute(self, query: str, params=None):
+        with self._lock:
+            if params is None:
+                return self.client.execute(query)
+            return self.client.execute(query, params)
+
+    @staticmethod
+    def _escape_string(value: str) -> str:
+        """Escape a string for safe inline embedding in a ClickHouse query literal.
+
+        clickhouse_driver's dict `params` on execute() for SELECT queries both
+        substitutes %(name)s AND re-sends the same dict to the server as custom
+        query settings, which errors on plain int/str values (Code: 26). So we
+        escape and inline values ourselves instead of relying on that path.
+        """
+        escaped = value.replace('\\', '\\\\').replace("'", "\\'")
+        return f"'{escaped}'"
 
     @staticmethod
     def _safe_float(val: Any) -> Optional[float]:
@@ -27,7 +55,7 @@ class ClickHouseDB:
 
     def fetch_jpl_master(self) -> List[JPLMaster]:
         query = f"SELECT function_loc, ba, latitude, longitude, descript FROM {Config.CH_JPL_DATABASE}.{Config.CH_JPL_TABLE}"
-        rows = self.client.execute(query)
+        rows = self._execute(query)
         result = []
         for row in rows:
             lat = row[2]
@@ -56,8 +84,8 @@ class ClickHouseDB:
         """Insert incoming panic event into ClickHouse table safely."""
         try:
             query = f"""
-                INSERT INTO {Config.CH_DATABASE}.{Config.CH_TABLE} 
-                (id, event_time, event_type, device_id, funcloc) 
+                INSERT INTO {Config.CH_DATABASE}.{Config.CH_TABLE}
+                (id, event_time, event_type, device_id, funcloc)
                 VALUES
             """
             data = [{
@@ -67,6 +95,28 @@ class ClickHouseDB:
                 'device_id': str(event.get('deviceId', '')),
                 'funcloc': str(event.get('jplId', ''))
             }]
-            self.client.execute(query, data)
+            self._execute(query, data)
         except Exception as e:
-            print(f"Failed to insert panic event into ClickHouse: {e}")
+            logger.error(f"Failed to insert panic event into ClickHouse: {e}")
+
+    def fetch_logs(self, jpl_id: Optional[str] = None, limit: int = 50, offset: int = 0):
+        """Fetch paginated panic event logs, safely escaped against SQL injection."""
+        query = (
+            f"SELECT id, event_time, event_type, trigger_type, device_id, "
+            f"funcloc, jpl_lat, jpl_lon, vtdid, loco_lat, loco_lon, distance_m, "
+            f"previous_alert, alert_changed, release_count, loco_speed, loco_location "
+            f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE}"
+        )
+        if jpl_id:
+            query += f" WHERE funcloc = {self._escape_string(jpl_id)}"
+        query += f" ORDER BY event_time DESC LIMIT {int(limit)} OFFSET {int(offset)}"
+        return self._execute(query)
+
+    def count_alerts_today(self) -> int:
+        """Count panic-press events recorded today (server-local date) — the 'Alert Hari Ini' stat, resets daily via toDate()."""
+        query = (
+            f"SELECT count() FROM {Config.CH_DATABASE}.{Config.CH_TABLE} "
+            f"WHERE event_type != 'RELEASE' AND toDate(event_time) = today()"
+        )
+        rows = self._execute(query)
+        return int(rows[0][0]) if rows else 0
