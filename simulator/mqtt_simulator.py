@@ -68,7 +68,7 @@ def generate_panic_event(jpl_id):
         "jplId": jpl_id,
         "datetime": datetime.now().strftime("%Y-%m-%dT%H:%M:%S+07:00"),
         "eventId": event_id,
-        "eventType": random.choice(["PBPRESSED", "RELEASE"])
+        "eventType": random.choice(["PBPRESSED", "PBRELEASED"])
     }
 
 def generate_led_status(vtdid):

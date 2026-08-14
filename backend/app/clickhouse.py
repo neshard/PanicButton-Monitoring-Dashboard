@@ -1,6 +1,5 @@
 import logging
 import threading
-import uuid
 from datetime import datetime
 from typing import List, Any, Optional
 from clickhouse_driver import Client
@@ -81,15 +80,21 @@ class ClickHouseDB:
         return result
 
     def insert_panic_event(self, event: dict):
-        """Insert incoming panic event into ClickHouse table safely."""
+        """Insert incoming panic event into ClickHouse table safely.
+
+        `id` is intentionally omitted: the device's own eventId (e.g.
+        "HAG10075_20260813_090815") is not a valid UUID, and the `id` column is
+        `UUID DEFAULT generateUUIDv4()` — passing a non-UUID string there made every
+        insert fail with CannotParseUuidError (silently, since this method swallows
+        its own exceptions), so no live panic events were ever actually being saved.
+        """
         try:
             query = f"""
                 INSERT INTO {Config.CH_DATABASE}.{Config.CH_TABLE}
-                (id, event_time, event_type, device_id, funcloc)
+                (event_time, event_type, device_id, funcloc)
                 VALUES
             """
             data = [{
-                'id': str(event.get('eventId', uuid.uuid4())),
                 'event_time': datetime.now(),
                 'event_type': str(event.get('eventType', '')),
                 'device_id': str(event.get('deviceId', '')),
@@ -112,11 +117,34 @@ class ClickHouseDB:
         query += f" ORDER BY event_time DESC LIMIT {int(limit)} OFFSET {int(offset)}"
         return self._execute(query)
 
+    # event_type values seen in the wild aren't a strict PBPRESSED/PBRELEASED binary —
+    # the live device feed actually records 'release', 'bahaya', 'perhatian' (lowercase,
+    # Indonesian). Match release-type events by name (case-insensitive) instead of a
+    # single exact string, so both the real data and PBPRESSED/PBRELEASED-style feeds work.
+    _RELEASE_EVENT_TYPES = ("'release'", "'pbrelease'", "'pbreleased'", "'aman'", "'safe'")
+
     def count_alerts_today(self) -> int:
         """Count panic-press events recorded today (server-local date) — the 'Alert Hari Ini' stat, resets daily via toDate()."""
+        release_list = ", ".join(self._RELEASE_EVENT_TYPES)
         query = (
             f"SELECT count() FROM {Config.CH_DATABASE}.{Config.CH_TABLE} "
-            f"WHERE event_type != 'RELEASE' AND toDate(event_time) = today()"
+            f"WHERE lower(event_type) NOT IN ({release_list}) AND toDate(event_time) = today()"
+        )
+        rows = self._execute(query)
+        return int(rows[0][0]) if rows else 0
+
+    def count_jpl_active_today(self) -> int:
+        """Count JPLs whose latest event today is still a press/danger event (not yet released) —
+        the 'JPL Aktif' stat, sourced from the DB log (today only) so it stays accurate
+        even if the backend's in-memory alert state was lost (e.g. after a restart)."""
+        release_list = ", ".join(self._RELEASE_EVENT_TYPES)
+        query = (
+            f"SELECT count() FROM ("
+            f"  SELECT funcloc, argMax(event_type, event_time) AS last_type "
+            f"  FROM {Config.CH_DATABASE}.{Config.CH_TABLE} "
+            f"  WHERE toDate(event_time) = today() "
+            f"  GROUP BY funcloc"
+            f") WHERE lower(last_type) NOT IN ({release_list})"
         )
         rows = self._execute(query)
         return int(rows[0][0]) if rows else 0

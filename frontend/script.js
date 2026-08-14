@@ -4,7 +4,7 @@ const API_BASE = '/api';
 
 // ---- Status Label Normalization (single language: Bahasa Indonesia, Title Case) ----
 const STATUS_LABELS = {
-    'release': 'Aman', 'aman': 'Aman', 'safe': 'Aman',
+    'pbreleased': 'Aman', 'release': 'Aman', 'aman': 'Aman', 'safe': 'Aman',
     'pbpressed': 'Bahaya', 'bahaya': 'Bahaya', 'danger': 'Bahaya',
     'hati-hati': 'Hati-hati', 'hati hati': 'Hati-hati', 'perhatian': 'Hati-hati', 'caution': 'Hati-hati', 'warning': 'Hati-hati'
 };
@@ -44,18 +44,21 @@ let jplPulseIntervals = {};
 let activeAlerts = new Set();
 let jplCaughtTrains = {}; // jplId -> array of vtdid caught by that JPL's active alert
 let alertsToday = 0;
+let jplActiveToday = 0;
 
 // Infinite Scroll State
 let sortedJPLIDs = [];
 let sortedTrainIDs = [];
 let jplVisibleCount = 0;
 let trainVisibleCount = 0;
+let trainRowElements = {}; // vtdid -> currently-rendered <tr>, avoids a DOM query per train on every live update
 let logOffset = 0;
 let logsLoading = false;
 let logsExhausted = false;
 let currentView = 'jpl';
 let isRenderingBatch = false;
 let initialFocusDone = false;
+let initialPBZoomDone = false; // only auto zoom-in once per page load, not on every WS reconnect
 
 // ---- Sidebar Toggle ----
 const hamburger = document.getElementById('hamburger');
@@ -193,7 +196,7 @@ function setBackendStatus(online) {
 }
 
 function updateTopBarStats() {
-    document.getElementById('stat-jpl-active').textContent = activeAlerts.size;
+    document.getElementById('stat-jpl-active').textContent = jplActiveToday;
 
     const affectedTrains = new Set();
     Object.values(jplCaughtTrains).forEach(vtdids => vtdids.forEach(v => affectedTrains.add(v)));
@@ -202,14 +205,20 @@ function updateTopBarStats() {
     document.getElementById('stat-alerts-today').textContent = alertsToday;
 }
 
-function fetchAlertsToday() {
-    fetch(`${API_BASE}/stats/alerts-today`)
+// "JPL Aktif" and "Alert Hari Ini" are both sourced from today's DB log (not just
+// in-memory state) so they stay accurate even across a backend restart.
+function fetchTodayStats() {
+    fetch(`${API_BASE}/stats/today`)
         .then(res => res.json())
-        .then(data => { alertsToday = data.count || 0; updateTopBarStats(); })
-        .catch(err => console.warn('Failed to fetch alerts-today:', err));
+        .then(data => {
+            alertsToday = data.alerts_today || 0;
+            jplActiveToday = data.jpl_active_today || 0;
+            updateTopBarStats();
+        })
+        .catch(err => console.warn('Failed to fetch today stats:', err));
 }
-fetchAlertsToday();
-setInterval(fetchAlertsToday, 5 * 60 * 1000); // periodic resync so the daily reset (midnight) self-corrects without a page reload
+fetchTodayStats();
+setInterval(fetchTodayStats, 5 * 60 * 1000); // periodic resync so the daily reset (midnight) self-corrects without a page reload
 
 // ---- WebSocket ----
 let ws = null;
@@ -240,8 +249,8 @@ function handleWebSocketMessage(msg) {
 
     } else if (msg.type === 'train_list' || msg.type === 'train_batch') {
         msg.data.forEach(train => {
-            updateTrain(train);
-            updateTrainTableRow(train.L_VTDID);
+            const nearestJPL = updateTrain(train);
+            updateTrainTableRow(train.L_VTDID, nearestJPL);
         });
         if (msg.type === 'train_list' && Object.keys(trainData).length === msg.data.length) {
             renderTrainTable(true);
@@ -256,8 +265,8 @@ function handleWebSocketMessage(msg) {
         renderTrainTable(true);
 
     } else if (msg.type === 'train_update') {
-        updateTrain(msg.data);
-        updateTrainTableRow(msg.data.L_VTDID);
+        const nearestJPL = updateTrain(msg.data);
+        updateTrainTableRow(msg.data.L_VTDID, nearestJPL);
 
     } else if (msg.type === 'led_update') {
         // 🚀 LIVE EVENT: Show popup ONLY when a new real-time message arrives
@@ -282,7 +291,19 @@ function handleWebSocketMessage(msg) {
             }
         });
         renderJPLTable(true);
+        refreshTrainTableJPLColumn(); // reflect restored active JPLs in the distance-to-active-JPL column
+        // train_list arrives BEFORE panic_alerts on initial connect, so trains rendered
+        // earlier had no active JPLs to compare against yet — refresh their map tooltips/popups now.
+        refreshAllTrainJPLTooltips();
+        refreshAllTrainPopups();
         updateTopBarStats();
+
+        // If the page just loaded (or reloaded) while a PB event was already active, zoom
+        // in a bit so it's immediately visible — but only once, not on every WS reconnect.
+        if (!initialPBZoomDone) {
+            if (activeAlerts.size > 0) zoomToActiveJPLs();
+            initialPBZoomDone = true;
+        }
     }
 }
 
@@ -302,7 +323,9 @@ function createTrainIcon(bodyColor, ringColor) {
             <span class="train-pin-icon" style="font-size:${Math.round(w * 0.42)}px;">🚆</span>
         </div>`,
         // Anchored at the pin's tip (bottom-center) so it stands exactly on its coordinate, not floating above it.
-        iconSize: [w, h], iconAnchor: [w / 2, h]
+        // popupAnchor shifts the popup's own anchor up by the full icon height so it opens
+        // above the pin instead of covering it (Leaflet defaults to opening right at iconAnchor).
+        iconSize: [w, h], iconAnchor: [w / 2, h], popupAnchor: [0, -h]
     });
 }
 function trainColors(vtdid) {
@@ -313,9 +336,12 @@ function updateTrain(data) {
     const vtdid = data.L_VTDID;
     const lat = parseFloat(data.L_LAT);
     const lon = parseFloat(data.L_LON);
-    if (isNaN(lat) || isNaN(lon)) return;
+    if (isNaN(lat) || isNaN(lon)) return null;
     trainData[vtdid] = data;
     const c = trainColors(vtdid);
+    // Computed once per update and reused for the popup + map tooltip + table row,
+    // instead of recomputing the same haversine check 3x per train per tick.
+    const nearestJPL = getNearestActiveJPL(lat, lon);
     let marker = trainMarkers[vtdid];
     if (marker) {
         marker.setLatLng([lat, lon]);
@@ -323,13 +349,64 @@ function updateTrain(data) {
             marker.setIcon(createTrainIcon(c.body, c.ring));
             marker.options._ring = c.ring;
         }
-        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}));
+        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}, nearestJPL));
     } else {
         marker = L.marker([lat, lon], { icon: createTrainIcon(c.body, c.ring) }).addTo(map);
         marker.options._ring = c.ring;
-        marker.bindPopup(createTrainPopup(data, ledStatus[vtdid] || {}));
+        marker.bindPopup(createTrainPopup(data, ledStatus[vtdid] || {}, nearestJPL));
+        // The distance badge and the full status popup both sit above the icon, so only
+        // one can be shown at a time: hide the badge while the popup is open, bring it
+        // back once the popup closes (bound once here, not on every position update).
+        marker.on('popupopen', () => { if (marker.getTooltip()) marker.closeTooltip(); });
+        marker.on('popupclose', () => { if (marker.getTooltip()) marker.openTooltip(); });
         trainMarkers[vtdid] = marker;
     }
+    updateTrainJPLTooltip(vtdid, nearestJPL);
+    return nearestJPL;
+}
+
+// ---- Always-visible map label for trains within 5km of an active JPL (no click needed) ----
+function updateTrainJPLTooltip(vtdid, nearestJPL) {
+    const marker = trainMarkers[vtdid];
+    if (!marker) return;
+    if (nearestJPL === undefined) nearestJPL = getNearestActiveJPLForTrain(vtdid);
+    if (nearestJPL) {
+        const label = `⚠ ${nearestJPL.distanceKm.toFixed(2)} km`;
+        if (marker.getTooltip()) {
+            marker.setTooltipContent(label);
+        } else {
+            const w = getTrainIconSize();
+            const h = Math.round(w * 1.333);
+            marker.bindTooltip(label, {
+                permanent: true,
+                direction: 'top',
+                offset: [0, -(h + 2)], // small clearance right above the icon
+                className: 'train-jpl-tooltip'
+            });
+            // If the marker's popup happens to already be open, keep the badge hidden
+            // until it closes, instead of showing both stacked above the icon at once.
+            if (marker.isPopupOpen()) marker.closeTooltip();
+        }
+    } else if (marker.getTooltip()) {
+        marker.unbindTooltip();
+    }
+}
+function refreshAllTrainJPLTooltips() {
+    // Must always run (even with 0 active alerts) so tooltips left over from a JPL that
+    // just got released are actually unbound — each per-marker check below is cheap now.
+    Object.keys(trainMarkers).forEach(vtdid => updateTrainJPLTooltip(vtdid));
+}
+// Popup content is otherwise only refreshed on a train's next position update (updateTrain),
+// so without this, clicking a train right after a JPL becomes active/inactive could show
+// stale popup content missing the warning line until the next position broadcast arrives.
+function refreshAllTrainPopups() {
+    Object.keys(trainMarkers).forEach(vtdid => {
+        const marker = trainMarkers[vtdid];
+        const data = trainData[vtdid];
+        if (!marker || !data) return;
+        const nearestJPL = getNearestActiveJPLForTrain(vtdid);
+        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}, nearestJPL));
+    });
 }
 function updateTrainMarkerColor(vtdid) {
     const data = trainData[vtdid]; if (!data) return;
@@ -338,12 +415,50 @@ function updateTrainMarkerColor(vtdid) {
     if (marker && marker.options._ring !== c.ring) {
         marker.setIcon(createTrainIcon(c.body, c.ring));
         marker.options._ring = c.ring;
-        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}));
+        marker.setPopupContent(createTrainPopup(data, ledStatus[vtdid] || {}, getNearestActiveJPLForTrain(vtdid)));
     }
 }
-function createTrainPopup(data, led) {
+function createTrainPopup(data, led, nearestJPL) {
     const info = getTrainStatusInfo(data.L_VTDID);
-    return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${info.status}`;
+    const jplBlock = nearestJPL
+        ? `<div class="train-popup-jpl"><b>⚠️ Peringatan: JPL Aktif ${nearestJPL.jplId}, jarak ${nearestJPL.distanceKm.toFixed(2)} km.</b></div>`
+        : '';
+    return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${info.status}${jplBlock}`;
+}
+
+// ---- Distance-to-active-JPL helper (within 5km) ----
+function haversineKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+function getNearestActiveJPL(lat, lon) {
+    // Cheap early exit: this runs on every train position update (up to ~300/sec), and
+    // there's almost never an active JPL — skip all parsing/math in the common case.
+    if (activeAlerts.size === 0) return null;
+    if (isNaN(lat) || isNaN(lon)) return null;
+
+    let nearest = null;
+    activeAlerts.forEach(jplId => {
+        const jpl = jplData[jplId];
+        if (!jpl || jpl.latitude == null || jpl.longitude == null) return;
+        const distanceKm = haversineKm(lat, lon, jpl.latitude, jpl.longitude);
+        if (distanceKm <= 5 && (!nearest || distanceKm < nearest.distanceKm)) {
+            nearest = { jplId, distanceKm };
+        }
+    });
+    return nearest;
+}
+// Convenience wrapper for call sites that only have a vtdid on hand (table render,
+// tooltip bulk-refresh) instead of a fresh position payload.
+function getNearestActiveJPLForTrain(vtdid) {
+    if (activeAlerts.size === 0) return null;
+    const train = trainData[vtdid];
+    if (!train) return null;
+    return getNearestActiveJPL(parseFloat(train.L_LAT), parseFloat(train.L_LON));
 }
 function updateTrainScale() {
     Object.keys(trainMarkers).forEach(vtdid => {
@@ -405,6 +520,29 @@ function setJPLState(jplId, state) {
     if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${formatStatusLabel(state)}`));
 }
 
+// ---- Zoom to show currently-active JPL(s) — fits all of them when 2+ are active at once ----
+function zoomToActiveJPLs(justPressedId) {
+    const activeIds = Array.from(activeAlerts).filter(id => jplData[id] && jplData[id].latitude != null && jplData[id].longitude != null);
+    if (activeIds.length === 0) return;
+
+    if (activeIds.length === 1) {
+        const id = activeIds[0];
+        const jpl = jplData[id];
+        const radiusLayers = jplRadiusLayers[id];
+        const warningCircle = radiusLayers && radiusLayers[1]; // yellow, 3000m — wider than the red danger circle
+        if (warningCircle) {
+            map.fitBounds(warningCircle.getBounds(), { maxZoom: 13, padding: [40, 40] });
+        } else {
+            map.setView([jpl.latitude, jpl.longitude], 13);
+        }
+    } else {
+        // Multiple JPLs active at once: fit bounds to show all of them together.
+        const bounds = L.latLngBounds(activeIds.map(id => [jplData[id].latitude, jplData[id].longitude]));
+        map.fitBounds(bounds, { maxZoom: 13, padding: [60, 60] });
+    }
+
+    if (justPressedId && jplMarkers[justPressedId]) jplMarkers[justPressedId].openPopup();
+}
 
 // ---- Clear/Release JPL Alert Helper ----
 function clearAlertForJPL(jplId) {
@@ -418,15 +556,23 @@ function clearAlertForJPL(jplId) {
     // Reset map marker color, stop pulse, and clear radius circles
     setJPLState(jplId, 'release');
     renderJPLTable(true);
+    refreshTrainTableJPLColumn(); // refresh distance-to-active-JPL info on trains
+    refreshAllTrainJPLTooltips(); // remove/update map-label distances now that this JPL is inactive
+    refreshAllTrainPopups(); // so a train's popup doesn't keep showing a stale warning after release
     updateTopBarStats();
+    fetchTodayStats(); // resync "JPL Aktif" from the DB log
 }
+
+const RELEASE_EVENT_TYPES = new Set(['RELEASE', 'PBRELEASE', 'PBRELEASED', 'AMAN', 'SAFE']);
 
 function addJPLPanicAlert(alertData) {
     const event = alertData.event || alertData;
     const jplId = event.jplId;
     const eventType = String(event.eventType || '').toUpperCase();
 
-    if (eventType === 'RELEASE') {
+    // The live device feed isn't a strict PBPRESSED/PBRELEASED binary — it also sends
+    // 'release'/'bahaya'/'perhatian' (Indonesian) — so match by name, not one exact string.
+    if (RELEASE_EVENT_TYPES.has(eventType)) {
         clearAlertForJPL(jplId);
         return;
     }
@@ -435,6 +581,10 @@ function addJPLPanicAlert(alertData) {
     jplCaughtTrains[jplId] = (alertData.caught_trains || []).map(c => c.vtdid);
     alertsToday++;
     updateTopBarStats();
+    fetchTodayStats(); // resync "JPL Aktif" from the DB log
+    refreshTrainTableJPLColumn(); // refresh distance-to-active-JPL info on trains
+    refreshAllTrainJPLTooltips(); // show map-label distances for trains now near this JPL
+    refreshAllTrainPopups(); // so clicking a train right after this event shows the warning immediately
     const jpl = jplData[jplId];
 
     const existing = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
@@ -471,25 +621,13 @@ function addJPLPanicAlert(alertData) {
         e.stopPropagation();
         // Closing the notification only dismisses the card — it must NOT clear the
         // PB event state (marker/pulse/danger radius). That only ends on a real
-        // RELEASE event from the backend, handled above via clearAlertForJPL().
+        // PBRELEASED event from the backend, handled above via clearAlertForJPL().
         dismissAlertNotification(jplId);
     });
 
     document.getElementById('alert-stack').appendChild(alertItem);
     setJPLState(jplId, 'pbpressed');
-
-    // Auto zoom to the affected area so the monitor sees it, but stay wide enough
-    // to keep context around the danger radius rather than zooming in tight.
-    if (jpl && jpl.latitude != null && jpl.longitude != null) {
-        const radiusLayers = jplRadiusLayers[jplId];
-        const warningCircle = radiusLayers && radiusLayers[1]; // yellow, 3000m — wider than the red danger circle
-        if (warningCircle) {
-            map.fitBounds(warningCircle.getBounds(), { maxZoom: 13, padding: [40, 40] });
-        } else {
-            map.setView([jpl.latitude, jpl.longitude], 13);
-        }
-        if (jplMarkers[jplId]) jplMarkers[jplId].openPopup();
-    }
+    zoomToActiveJPLs(jplId);
 }
 
 // ---- Dismiss a notification card only, without touching the underlying PB alert state ----
@@ -610,6 +748,7 @@ function renderTrainTable(reset = false) {
             return order[statusA] - order[statusB];
         });
         tbody.innerHTML = '';
+        trainRowElements = {};
     }
 
     const nextBatchIDs = sortedTrainIDs.slice(trainVisibleCount, trainVisibleCount + 50);
@@ -622,6 +761,8 @@ function renderTrainTable(reset = false) {
         if (led.ledMerah === '1') { status = 'Bahaya'; statusClass = 'status-bahaya'; }
         else if (led.ledKuning === '1') { status = 'Hati-hati'; statusClass = 'status-hati-hati'; }
         const location = [train.L_KECAMATAN, train.L_KABUPATEN, train.L_PROPINSI].filter(Boolean).join(', ');
+        const nearestJPL = getNearestActiveJPLForTrain(vtdid);
+        const jplDistance = nearestJPL ? `${nearestJPL.distanceKm.toFixed(2)} km (${nearestJPL.jplId})` : '-';
 
         return `
             <tr class="data-row" data-vtdid="${vtdid}">
@@ -632,11 +773,16 @@ function renderTrainTable(reset = false) {
                 <td>${location || train.L_LOCATION || ''}</td>
                 <td>${(train.L_RECEIVED_DATE || '').slice(0, 16)}</td>
                 <td class="${statusClass}">${status}</td>
+                <td>${jplDistance}</td>
             </tr>`;
     }).join('');
 
     tbody.insertAdjacentHTML('beforeend', html);
     trainVisibleCount += nextBatchIDs.length;
+    // Cache <tr> references so live per-train updates (up to ~300/sec) don't need a DOM query.
+    nextBatchIDs.forEach(vtdid => {
+        trainRowElements[vtdid] = tbody.querySelector(`tr[data-vtdid="${vtdid}"]`);
+    });
 }
 function getTrainStatusInfo(vtdid) {
     const led = ledStatus[vtdid] || {};
@@ -651,18 +797,31 @@ function getTrainStatusInfo(vtdid) {
 }
 
 // Live updates for Train Table
-function updateTrainTableRow(vtdid) {
-    const tr = document.querySelector(`#train-table tbody tr[data-vtdid="${vtdid}"]`);
-    if (!tr) return; 
+function updateTrainTableRow(vtdid, nearestJPL) {
+    const tr = trainRowElements[vtdid]; // cached — avoids a DOM query on every live update
+    if (!tr) return;
     const train = trainData[vtdid] || {};
     const info = getTrainStatusInfo(vtdid);
     const location = [train.L_KECAMATAN, train.L_KABUPATEN, train.L_PROPINSI].filter(Boolean).join(', ');
-    
+    if (nearestJPL === undefined) nearestJPL = getNearestActiveJPLForTrain(vtdid);
+
     const cells = tr.children;
     cells[3].textContent = train.L_SPEED || '0';
     cells[4].textContent = location || train.L_LOCATION || '';
     cells[6].textContent = info.status;
     cells[6].className = info.statusClass;
+    cells[7].textContent = nearestJPL ? `${nearestJPL.distanceKm.toFixed(2)} km (${nearestJPL.jplId})` : '-';
+}
+
+// Update just the "Jarak JPL Aktif" cell on currently-rendered rows when the active JPL
+// set changes — cheap alternative to a full renderTrainTable(true) rebuild+resort, since
+// JPL distance doesn't affect the table's sort order (which is by LED status only).
+function refreshTrainTableJPLColumn() {
+    Object.keys(trainRowElements).forEach(vtdid => {
+        const tr = trainRowElements[vtdid];
+        const nearestJPL = getNearestActiveJPLForTrain(vtdid);
+        tr.children[7].textContent = nearestJPL ? `${nearestJPL.distanceKm.toFixed(2)} km (${nearestJPL.jplId})` : '-';
+    });
 }
 
 // --- Event Log Table (API Pagination) ---

@@ -17,6 +17,26 @@
     --top-bar-height: 52px;
 }
 
+/* ===== Dark scrollbars (track + thumb) everywhere, matching the app's dark theme ===== */
+* {
+    scrollbar-width: thin; /* Firefox */
+    scrollbar-color: #4a4d52 #1a1c20; /* Firefox: thumb, track */
+}
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+*::-webkit-scrollbar-track {
+    background: #1a1c20;
+}
+*::-webkit-scrollbar-thumb {
+    background: #4a4d52;
+    border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: #5c6066;
+}
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background: #141414;
@@ -345,6 +365,36 @@ tbody tr:hover {
     transform: translate(-50%, -50%);
     line-height: 1;
     pointer-events: none;
+}
+
+/* Train popup: highlight the "distance to active JPL" line as its own block so it
+   doesn't blend into the rest of the plain-text popup (Leaflet popups are light-themed). */
+.train-popup-jpl {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: rgba(255, 159, 10, 0.14);
+    border-left: 3px solid #ff9f0a;
+    border-radius: 4px;
+    color: #b35f00;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+/* Always-visible map label (Leaflet permanent tooltip) for trains within 5km of an
+   active JPL — a compact badge next to the marker, no click needed to see it. */
+.train-jpl-tooltip {
+    background: #ff9f0a;
+    color: #241900;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 2px 7px;
+    border: none;
+    border-radius: 10px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    white-space: nowrap;
+}
+.train-jpl-tooltip::before {
+    display: none; /* badge doesn't need Leaflet's default tooltip arrow */
 }
 
 /* ===== Alert Stack (kept dark to pop on the dark map) ===== */

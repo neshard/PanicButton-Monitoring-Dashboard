@@ -16,7 +16,7 @@ class PanicEvent(BaseModel):
     jplId: str
     datetime: str
     eventId: str
-    eventType: str   # PBPRESSED or RELEASE
+    eventType: str   # PBPRESSED or PBRELEASED
 
 class LEDStatus(BaseModel):
     vtdid: str          # extracted from topic

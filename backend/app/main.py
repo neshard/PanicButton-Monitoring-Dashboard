@@ -17,6 +17,10 @@ from .models import JPLMaster, TrainLocation, LEDStatus, PanicEvent
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# eventType values that mean "cleared" — the live device feed isn't a strict
+# PBPRESSED/PBRELEASED binary, it also sends 'release'/'bahaya'/'perhatian' (Indonesian).
+RELEASE_EVENT_TYPES = {'RELEASE', 'PBRELEASE', 'PBRELEASED', 'AMAN', 'SAFE'}
+
 # Global state
 jpl_master: List[JPLMaster] = []
 jpl_master_serialized: List[dict] = []
@@ -162,8 +166,10 @@ async def lifespan(app: FastAPI):
             jpl_id = event.get('jplId')
             event_type = str(event.get('eventType', '')).upper()
 
-            # If event is RELEASE, remove active alert from memory list
-            if event_type == 'RELEASE':
+            # If event is a release/clear event, remove active alert from memory list.
+            # The live device feed isn't a strict PBPRESSED/PBRELEASED binary — it records
+            # 'release', 'bahaya', 'perhatian' (Indonesian) — so match by name, not one exact string.
+            if event_type in RELEASE_EVENT_TYPES:
                 global panic_alerts
                 panic_alerts = [a for a in panic_alerts if a.get('event', {}).get('jplId') != jpl_id]
                 broadcast_payload = event
@@ -278,14 +284,17 @@ async def get_jpl():
     return jpl_master_serialized
 
 
-@app.get("/api/stats/alerts-today")
-async def get_alerts_today():
+@app.get("/api/stats/today")
+async def get_today_stats():
     try:
-        count = await asyncio.to_thread(db.count_alerts_today)
+        alerts_today, jpl_active_today = await asyncio.gather(
+            asyncio.to_thread(db.count_alerts_today),
+            asyncio.to_thread(db.count_jpl_active_today)
+        )
     except Exception as e:
-        logger.error(f"Failed to count today's alerts: {e}")
-        count = 0
-    return {"count": count}
+        logger.error(f"Failed to fetch today's stats: {e}")
+        alerts_today, jpl_active_today = 0, 0
+    return {"alerts_today": alerts_today, "jpl_active_today": jpl_active_today}
 
 
 # ==========================================
