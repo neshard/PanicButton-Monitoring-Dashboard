@@ -157,12 +157,10 @@ async def lifespan(app: FastAPI):
             pending_train_updates[vtdid] = payload
 
         elif 'eventType' in payload:
+            # Not inserted into ClickHouse here — an external device already writes
+            # panic events directly to the DB, so we only track in-memory state and
+            # broadcast to connected dashboards.
             event = payload
-            try:
-                db.insert_panic_event(event)
-            except Exception as e:
-                logger.error(f"Failed to insert panic event: {e}")
-
             jpl_id = event.get('jplId')
             event_type = str(event.get('eventType', '')).upper()
 

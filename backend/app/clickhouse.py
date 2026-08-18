@@ -1,6 +1,5 @@
 import logging
 import threading
-from datetime import datetime
 from typing import List, Any, Optional
 from clickhouse_driver import Client
 from .config import Config
@@ -19,9 +18,9 @@ class ClickHouseDB:
             database=Config.CH_DATABASE
         )
         # clickhouse_driver.Client wraps a single TCP connection and is not
-        # thread-safe. It's called concurrently from MQTT callback threads
-        # (insert_panic_event) and the FastAPI threadpool (asyncio.to_thread),
-        # so serialize access to avoid interleaved reads/writes on the socket.
+        # thread-safe, and _execute() can be called concurrently from multiple
+        # FastAPI threadpool threads (asyncio.to_thread), so serialize access
+        # to avoid interleaved reads/writes on the socket.
         self._lock = threading.Lock()
 
     def _execute(self, query: str, params=None):
@@ -79,41 +78,26 @@ class ClickHouseDB:
             ))
         return result
 
-    def insert_panic_event(self, event: dict):
-        """Insert incoming panic event into ClickHouse table safely.
-
-        `id` is intentionally omitted: the device's own eventId (e.g.
-        "HAG10075_20260813_090815") is not a valid UUID, and the `id` column is
-        `UUID DEFAULT generateUUIDv4()` — passing a non-UUID string there made every
-        insert fail with CannotParseUuidError (silently, since this method swallows
-        its own exceptions), so no live panic events were ever actually being saved.
-        """
-        try:
-            query = f"""
-                INSERT INTO {Config.CH_DATABASE}.{Config.CH_TABLE}
-                (event_time, event_type, device_id, funcloc)
-                VALUES
-            """
-            data = [{
-                'event_time': datetime.now(),
-                'event_type': str(event.get('eventType', '')),
-                'device_id': str(event.get('deviceId', '')),
-                'funcloc': str(event.get('jplId', ''))
-            }]
-            self._execute(query, data)
-        except Exception as e:
-            logger.error(f"Failed to insert panic event into ClickHouse: {e}")
-
     def fetch_logs(self, jpl_id: Optional[str] = None, limit: int = 50, offset: int = 0):
-        """Fetch paginated panic event logs, safely escaped against SQL injection."""
+        """Fetch paginated panic event logs, safely escaped against SQL injection.
+
+        Scoped to today and non-release events only — same "Alert Hari Ini" definition
+        as count_alerts_today(), so the Event Log tab lists exactly what that stat counts.
+        """
         query = (
             f"SELECT id, event_time, event_type, trigger_type, device_id, "
             f"funcloc, jpl_lat, jpl_lon, vtdid, loco_lat, loco_lon, distance_m, "
             f"previous_alert, alert_changed, release_count, loco_speed, loco_location "
             f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE}"
         )
+        release_list = ", ".join(self._RELEASE_EVENT_TYPES)
+        conditions = [
+            "toDate(event_time) = today()",
+            f"lower(event_type) NOT IN ({release_list})"
+        ]
         if jpl_id:
-            query += f" WHERE funcloc = {self._escape_string(jpl_id)}"
+            conditions.append(f"funcloc = {self._escape_string(jpl_id)}")
+        query += " WHERE " + " AND ".join(conditions)
         query += f" ORDER BY event_time DESC LIMIT {int(limit)} OFFSET {int(offset)}"
         return self._execute(query)
 

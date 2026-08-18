@@ -41,6 +41,7 @@ let trainData = {};
 let ledStatus = {};
 let jplRadiusLayers = {};
 let jplPulseIntervals = {};
+let jplRadiusPulseIntervals = {};
 let activeAlerts = new Set();
 let jplCaughtTrains = {}; // jplId -> array of vtdid caught by that JPL's active alert
 let alertsToday = 0;
@@ -120,19 +121,22 @@ const tabPanes = {
 };
 const tabContent = document.getElementById('tab-content');
 
+function switchToTab(tabName) {
+    tabBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+    currentView = tabName;
+    Object.keys(tabPanes).forEach(key => tabPanes[key].classList.toggle('active', key === currentView));
+
+    // Reset scroll position when switching tabs
+    tabContent.scrollTop = 0;
+
+    if (currentView === 'jpl') renderJPLTable(true);
+    else if (currentView === 'train') renderTrainTable(true);
+    else if (currentView === 'log') fetchLogs(true);
+}
+
 tabBtns.forEach(btn => {
     btn.addEventListener('click', function() {
-        tabBtns.forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-        currentView = this.dataset.tab;
-        Object.keys(tabPanes).forEach(key => tabPanes[key].classList.toggle('active', key === currentView));
-        
-        // Reset scroll position when switching tabs
-        tabContent.scrollTop = 0;
-
-        if (currentView === 'jpl') renderJPLTable(true);
-        else if (currentView === 'train') renderTrainTable(true);
-        else if (currentView === 'log') fetchLogs(true);
+        switchToTab(this.dataset.tab);
     });
 });
 
@@ -196,7 +200,10 @@ function setBackendStatus(online) {
 }
 
 function updateTopBarStats() {
-    document.getElementById('stat-jpl-active').textContent = jplActiveToday;
+    // Combine live in-memory state with the DB-sourced count: live state reacts
+    // instantly to any signal (including test/dummy ones never written to ClickHouse),
+    // while the DB count fills the gap if the backend restarted and lost in-memory state.
+    document.getElementById('stat-jpl-active').textContent = Math.max(activeAlerts.size, jplActiveToday);
 
     const affectedTrains = new Set();
     Object.values(jplCaughtTrains).forEach(vtdids => vtdids.forEach(v => affectedTrains.add(v)));
@@ -204,6 +211,24 @@ function updateTopBarStats() {
 
     document.getElementById('stat-alerts-today').textContent = alertsToday;
 }
+
+// ---- Top bar stats link to Main Status (sidebar tabs) ----
+// JPL Aktif / Kereta Terpengaruh: open the relevant tab and focus the map on the active PB zone.
+// Alert Hari Ini: just open the Event Log tab (no map location tied to it).
+document.querySelector('.stat-jpl').addEventListener('click', () => {
+    openSidebar();
+    switchToTab('jpl');
+    zoomToActiveJPLs();
+});
+document.querySelector('.stat-train').addEventListener('click', () => {
+    openSidebar();
+    switchToTab('train');
+    zoomToActiveJPLs();
+});
+document.querySelector('.stat-alert').addEventListener('click', () => {
+    openSidebar();
+    switchToTab('log');
+});
 
 // "JPL Aktif" and "Alert Hari Ini" are both sourced from today's DB log (not just
 // in-memory state) so they stay accurate even across a backend restart.
@@ -497,13 +522,30 @@ function startPulse(jplId) {
 function stopPulse(jplId) {
     if (jplPulseIntervals[jplId]) { clearInterval(jplPulseIntervals[jplId]); delete jplPulseIntervals[jplId]; }
     const marker = jplMarkers[jplId];
-    if (marker) { marker.setRadius(6); marker.setStyle({ fillColor: '#30d158', fillOpacity: 0.8 }); }
+    if (marker) { marker.setRadius(6); marker.setStyle({ fillColor: '#0a84ff', fillOpacity: 0.8 }); }
+}
+function startRadiusPulse(jplId) {
+    const layers = jplRadiusLayers[jplId]; if (!layers) return;
+    stopRadiusPulse(jplId);
+    const [red, yellow] = layers;
+    let t = 0, growing = true;
+    jplRadiusPulseIntervals[jplId] = setInterval(() => {
+        t += growing ? 0.12 : -0.12;
+        if (t >= 1) { t = 1; growing = false; }
+        if (t <= 0) { t = 0; growing = true; }
+        red.setStyle({ fillOpacity: 0.12 + t * 0.35, opacity: 0.45 + t * 0.5, weight: 2 + t * 2 });
+        yellow.setStyle({ fillOpacity: 0.06 + t * 0.28, opacity: 0.35 + t * 0.45, weight: 2 + t * 1.5 });
+    }, 150);
+}
+function stopRadiusPulse(jplId) {
+    if (jplRadiusPulseIntervals[jplId]) { clearInterval(jplRadiusPulseIntervals[jplId]); delete jplRadiusPulseIntervals[jplId]; }
 }
 function updateRadiusCircles(jplId, state) {
     if (jplRadiusLayers[jplId]) {
         jplRadiusLayers[jplId].forEach(layer => map.removeLayer(layer));
         delete jplRadiusLayers[jplId];
     }
+    stopRadiusPulse(jplId);
     if (state !== 'pbpressed') return;
     const jpl = jplData[jplId]; if (!jpl) return;
     const lat = jpl.latitude, lon = jpl.longitude;
@@ -511,6 +553,7 @@ function updateRadiusCircles(jplId, state) {
     const red = L.circle([lat, lon], { renderer: jplRenderer, radius: 1100, color: '#ff453a', fillColor: '#ff453a', fillOpacity: 0.15, weight: 2, opacity: 0.6 }).addTo(map);
     const yellow = L.circle([lat, lon], { renderer: jplRenderer, radius: 3000, color: '#ff9f0a', fillColor: '#ff9f0a', fillOpacity: 0.1, weight: 2, opacity: 0.5 }).addTo(map);
     jplRadiusLayers[jplId] = [red, yellow];
+    startRadiusPulse(jplId);
 }
 function setJPLState(jplId, state) {
     const marker = jplMarkers[jplId]; if (!marker) return;
@@ -725,8 +768,8 @@ function renderJPLTable(reset = false) {
         const statusClass = statusClassFor(status);
         return `
             <tr class="data-row ${statusClass}" data-jpl="${id}">
-                <td>${id}</td><td>${jpl.ba || ''}</td><td>${jpl.descript || ''}</td>
                 <td class="${statusClass}">${status}</td>
+                <td>${id}</td><td>${jpl.ba || ''}</td><td>${jpl.descript || ''}</td>
             </tr>`;
     }).join('');
 
@@ -766,13 +809,13 @@ function renderTrainTable(reset = false) {
 
         return `
             <tr class="data-row" data-vtdid="${vtdid}">
+                <td class="${statusClass}">${status}</td>
                 <td>${vtdid}</td>
                 <td>${train.L_SARANA || ''}</td>
                 <td>${train.L_KERETA || ''}</td>
                 <td>${train.L_SPEED || '0'}</td>
                 <td>${location || train.L_LOCATION || ''}</td>
                 <td>${(train.L_RECEIVED_DATE || '').slice(0, 16)}</td>
-                <td class="${statusClass}">${status}</td>
                 <td>${jplDistance}</td>
             </tr>`;
     }).join('');
@@ -806,10 +849,10 @@ function updateTrainTableRow(vtdid, nearestJPL) {
     if (nearestJPL === undefined) nearestJPL = getNearestActiveJPLForTrain(vtdid);
 
     const cells = tr.children;
-    cells[3].textContent = train.L_SPEED || '0';
-    cells[4].textContent = location || train.L_LOCATION || '';
-    cells[6].textContent = info.status;
-    cells[6].className = info.statusClass;
+    cells[0].textContent = info.status;
+    cells[0].className = info.statusClass;
+    cells[4].textContent = train.L_SPEED || '0';
+    cells[5].textContent = location || train.L_LOCATION || '';
     cells[7].textContent = nearestJPL ? `${nearestJPL.distanceKm.toFixed(2)} km (${nearestJPL.jplId})` : '-';
 }
 
@@ -843,9 +886,9 @@ function fetchLogs(reset = true) {
             if (logs.length < 50) logsExhausted = true;
             const html = logs.map(log => `
                 <tr class="data-row" data-funcloc="${log.funcloc || ''}">
+                    <td class="${statusClassFor(formatStatusLabel(log.event_type))}">${formatStatusLabel(log.event_type)}</td>
                     <td>${log.id ? String(log.id).slice(0, 5) + '...' : ''}</td>
                     <td>${log.event_time || ''}</td>
-                    <td class="${statusClassFor(formatStatusLabel(log.event_type))}">${formatStatusLabel(log.event_type)}</td>
                     <td class="${statusClassFor(formatStatusLabel(log.trigger_type))}">${formatStatusLabel(log.trigger_type)}</td>
                     <td>${log.device_id || ''}</td>
                     <td>${log.funcloc || ''}</td>
