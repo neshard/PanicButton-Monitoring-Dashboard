@@ -49,7 +49,36 @@ let jplActiveToday = 0;
 let healthStatus = {}; // jplId -> latest {deviceId, jplId, batteryPersentage, batteryCharging, powerType, datetime}
 let lowBatteryAlerted = new Set(); // jplId currently showing a low-battery alert card
 let staleSignalAlerted = new Set(); // jplId currently showing a signal-loss alert card
+let jplPowerWarningState = {};
 const HEALTH_STALE_MS = 5 * 60 * 1000; // 5 minutes
+
+function parseCharging(value) {
+    if (value === null || value === undefined) return false;
+    const v = String(value).trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on', 'charging'].includes(v);
+}
+
+function normalizeHealthPayload(raw) {
+    if (!raw || typeof raw !== 'object') return raw;
+    const h = { ...raw };
+
+    if (!h.jplId && h.funcloc) h.jplId = h.funcloc;
+    if (!h.powerType && h.power) h.powerType = h.power;
+    if (!h.power && h.powerType) h.power = h.powerType;
+
+    if (h.batteryPersentage == null && h.batteryPercentage != null) {
+        h.batteryPersentage = h.batteryPercentage;
+    }
+    if (h.batteryPercentage == null && h.batteryPersentage != null) {
+        h.batteryPercentage = h.batteryPersentage;
+    }
+
+    if (h.batteryCharging != null) {
+        h.batteryCharging = parseCharging(h.batteryCharging);
+    }
+
+    return h;
+}
 
 // Infinite Scroll State
 let sortedJPLIDs = [];
@@ -274,6 +303,8 @@ function autoFocusOnDensity() {
 function handleWebSocketMessage(msg) {
     if (msg.type === 'jpl_list') {
         msg.data.forEach(jpl => addJPLMarker(jpl));
+        // Set initial marker state (grey if no health)
+        Object.keys(jplMarkers).forEach(id => setJPLState(id, 'release'));
         renderJPLTable(true);
         autoFocusOnDensity();
 
@@ -337,23 +368,43 @@ function handleWebSocketMessage(msg) {
 
     } else if (msg.type === 'health_list') {
         // Restore known battery/power state without spawning alert cards for historical data.
-        msg.data.forEach(h => { if (h.jplId) healthStatus[h.jplId] = h; });
+        msg.data.forEach(h => {
+            const normalized = normalizeHealthPayload(h);
+            if (normalized.jplId) {
+                healthStatus[normalized.jplId] = normalized;
+                if (!healthStatus[normalized.jplId].__firstSeenAt) {
+                    healthStatus[normalized.jplId].__firstSeenAt = Date.now();
+                }
+                if (jplData[normalized.jplId]) jplData[normalized.jplId].healthStatus = normalized;
+            }
+        });
         renderJPLTable(true);
         checkHealthStaleness();
+        syncJPLHealthPopupState();
+        Object.keys(jplData).forEach(jplId => setJPLState(jplId, activeAlerts.has(jplId) ? 'pbpressed' : 'release'));
 
     } else if (msg.type === 'health_update') {
         // 🚀 LIVE EVENT: check low-battery condition and (re)spawn an alert card if needed.
-        const h = msg.data;
+        const h = normalizeHealthPayload(msg.data);
         if (h.jplId) {
             const isFirstReport = !healthStatus[h.jplId];
             healthStatus[h.jplId] = h;
+            if (!healthStatus[h.jplId].__firstSeenAt) {
+                healthStatus[h.jplId].__firstSeenAt = Date.now();
+            }
+            if (jplData[h.jplId]) jplData[h.jplId].healthStatus = h;
             if (isFirstReport && currentView === 'jpl') {
                 // Move this JPL up into the "has battery data" tier now that it just reported for the first time.
                 renderJPLTable(true);
             } else {
                 updateJPLTableRow(h.jplId);
             }
+            setJPLState(h.jplId, 'release');
+            updateJPLPowerWarningBadge(h.jplId);
+            updateJPLPopupContent(h.jplId);
+            updateJPLInfoPanel(h.jplId);
             checkLowBattery(h.jplId);
+            checkHealthStaleness();
         }
     }
 }
@@ -522,6 +573,41 @@ map.on('zoomend', updateTrainScale);
 updateTrainScale();
 
 // ---- JPL Map Markers ----
+function updateJPLPopupContent(jplId) {
+    const marker = jplMarkers[jplId];
+    if (!marker) return;
+    const jpl = jplData[jplId] || {};
+    const health = healthStatus[jplId] || null;
+    const statusText = activeAlerts.has(jplId)
+        ? 'Bahaya'
+        : (health && health.status ? String(health.status) : 'Aman');
+
+    const infoLines = [
+        `<b>${jplId}</b>`,
+        jpl.descript ? `${jpl.descript}` : '',
+        jpl.ba ? `BA: ${jpl.ba}` : '',
+        `Status: ${statusText}`,
+    ];
+
+    if (health) {
+        const power = health.powerType || health.power || 'N/A';
+        if (power && power !== 'N/A') infoLines.push(`Power: ${power}`);
+        if (health.batteryVoltage != null) infoLines.push(`Battery Voltage: ${health.batteryVoltage} V`);
+        if (health.batteryPersentage != null) infoLines.push(`Battery: ${health.batteryPersentage}%`);
+        if (health.batteryCharging != null) infoLines.push(`Battery Charging: ${parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak'}`);
+        if (health.gsmNumber) infoLines.push(`GSM: ${health.gsmNumber}`);
+        if (health.signalStrength) infoLines.push(`Signal: ${health.signalStrength}`);
+        if (health.datetime) infoLines.push(`Last Update: ${health.datetime}`);
+    }
+
+    marker.setPopupContent(infoLines.filter(Boolean).join('<br>'));
+}
+
+function syncJPLHealthPopupState() {
+    Object.keys(jplData).forEach(jplId => updateJPLPopupContent(jplId));
+    Object.keys(healthStatus).forEach(jplId => updateJPLPowerWarningBadge(jplId));
+}
+
 function addJPLMarker(jpl) {
     const id = jpl.function_loc;
     if (!id || jplMarkers[id]) return;
@@ -532,8 +618,74 @@ function addJPLMarker(jpl) {
         renderer: jplRenderer, radius: 6, fillColor: '#0a84ff', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8
     }).addTo(map);
     marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">${formatStatusLabel('release')}</span>`);
-    marker.on('click', () => map.setView([lat, lon], 14));
+    marker.on('click', () => {
+        map.setView([lat, lon], 14);
+        updateJPLPopupContent(id);
+        updateJPLInfoPanel(id);
+    });
     jplMarkers[id] = marker;
+    setJPLState(id, 'release');
+    updateJPLPopupContent(id);
+    updateJPLPowerWarningBadge(id);
+}
+
+function updateJPLPowerWarningBadge(jplId) {
+    const marker = jplMarkers[jplId];
+    if (!marker) return;
+    const health = healthStatus[jplId];
+    const power = health ? String(health.powerType || health.power || '').toUpperCase() : '';
+    const isBackup = power === 'BATTERY';
+
+    if (isBackup) {
+        if (!jplPowerWarningState[jplId]) {
+            marker.bindTooltip('⚠️ Backup power: BATTERY', {
+                permanent: true,
+                direction: 'top',
+                offset: [0, -12],
+                className: 'jpl-power-tooltip'
+            });
+            jplPowerWarningState[jplId] = true;
+        } else {
+            marker.setTooltipContent('⚠️ Backup power: BATTERY');
+        }
+    } else if (jplPowerWarningState[jplId]) {
+        marker.unbindTooltip();
+        jplPowerWarningState[jplId] = false;
+    }
+}
+
+function updateJPLInfoPanel(jplId) {
+    const body = document.getElementById('info-panel-body');
+    if (!body) return;
+
+    const existing = body.querySelector('.info-jpl-health');
+    if (existing) existing.remove();
+
+    const jpl = jplData[jplId] || {};
+    const health = healthStatus[jplId] || {};
+    const fields = [
+        ['Status', activeAlerts.has(jplId) ? 'Bahaya' : (health.status || 'Aman')],
+        ['Power', health.powerType || health.power || 'N/A'],
+        ['Battery Voltage', health.batteryVoltage != null ? `${health.batteryVoltage} V` : 'N/A'],
+        ['Battery Percentage', health.batteryPersentage != null ? `${health.batteryPersentage}%` : 'N/A'],
+        ['Battery Charging', health.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : 'N/A'],
+        ['GSM Number', health.gsmNumber || 'N/A'],
+        ['Signal Strength', health.signalStrength || 'N/A'],
+        ['Last Update', health.datetime || 'N/A']
+    ];
+
+    const panel = document.createElement('div');
+    panel.className = 'info-section info-jpl-health';
+    panel.innerHTML = `
+        <h4>JPL Health</h4>
+        ${fields.map(([label, value]) => `
+            <div class="info-row">
+                <span style="color:#9aa0a6;">${label}</span>
+                <strong style="margin-left:auto; text-align:right;">${value}</strong>
+            </div>
+        `).join('')}
+    `;
+    body.appendChild(panel);
 }
 function startPulse(jplId) {
     const marker = jplMarkers[jplId]; if (!marker) return;
@@ -548,7 +700,17 @@ function startPulse(jplId) {
 function stopPulse(jplId) {
     if (jplPulseIntervals[jplId]) { clearInterval(jplPulseIntervals[jplId]); delete jplPulseIntervals[jplId]; }
     const marker = jplMarkers[jplId];
-    if (marker) { marker.setRadius(6); marker.setStyle({ fillColor: '#0a84ff', fillOpacity: 0.8 }); }
+    if (marker) {
+        marker.setRadius(6);
+        const isGray = !healthStatus[jplId] && !activeAlerts.has(jplId);
+        marker.setStyle({
+            fillColor: isGray ? '#8a8f98' : '#0a84ff',
+            color: isGray ? '#dfe3e8' : '#fff',
+            fillOpacity: isGray ? 0.7 : 0.8,
+            opacity: 1,
+            weight: 2
+        });
+    }
 }
 function startRadiusPulse(jplId) {
     const layers = jplRadiusLayers[jplId]; if (!layers) return;
@@ -583,6 +745,12 @@ function updateRadiusCircles(jplId, state) {
 }
 function setJPLState(jplId, state) {
     const marker = jplMarkers[jplId]; if (!marker) return;
+    if (!healthStatus[jplId] && !activeAlerts.has(jplId)) {
+        stopPulse(jplId);
+        marker.setStyle({ fillColor: '#8a8f98', color: '#dfe3e8', fillOpacity: 0.7, opacity: 1, weight: 2 });
+        updateRadiusCircles(jplId, 'release');
+        return;
+    }
     if (state === 'pbpressed') { marker.setStyle({ fillColor: '#ff453a' }); startPulse(jplId); } else { stopPulse(jplId); }
     updateRadiusCircles(jplId, state);
     const popup = marker.getPopup();
@@ -782,7 +950,9 @@ function removeAlertCardsBy(attr, value) {
 function checkLowBattery(jplId) {
     const h = healthStatus[jplId];
     if (!h || h.batteryPersentage == null) return;
-    const isLow = h.batteryPersentage < 20 && !h.batteryCharging;
+    const pct = Number(h.batteryPersentage);
+    const charging = parseCharging(h.batteryCharging);
+    const isLow = pct < 20 && !charging;
     if (isLow && !lowBatteryAlerted.has(jplId)) {
         lowBatteryAlerted.add(jplId);
         addLowBatteryAlert(jplId, h);
@@ -829,11 +999,11 @@ function checkHealthStaleness() {
     const now = Date.now();
     Object.keys(healthStatus).forEach(jplId => {
         const h = healthStatus[jplId];
-        const t = h.datetime ? new Date(h.datetime).getTime() : NaN;
-        const isStale = !isNaN(t) && (now - t) > HEALTH_STALE_MS;
+        const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+        const isStale = !isNaN(firstSeenAt) && (now - firstSeenAt) > HEALTH_STALE_MS;
         if (isStale && !staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.add(jplId);
-            addStaleSignalAlert(jplId);
+            addInactivePanicButtonAlert(jplId, h);
         } else if (!isStale && staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.delete(jplId);
             removeAlertCardsBy('data-stale-jpl', jplId);
@@ -842,7 +1012,7 @@ function checkHealthStaleness() {
 }
 setInterval(checkHealthStaleness, 30 * 1000);
 
-function addStaleSignalAlert(jplId) {
+function addInactivePanicButtonAlert(jplId, health) {
     const jpl = jplData[jplId] || {};
     removeAlertCardsBy('data-stale-jpl', jplId);
 
@@ -854,12 +1024,13 @@ function addStaleSignalAlert(jplId) {
 
     alertItem.innerHTML = `
         <div class="alert-header">
-            <span style="color:#ffd60a; font-weight:bold;">📡 SIGNAL LOSS: ${jplId}</span>
+            <span style="color:#ffd60a; font-weight:bold;">📵 PANIC BUTTON INACTIVE: ${jplId}</span>
             <button class="alert-close" data-stale-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">
-            <div>Alat tidak mengirim sinyal &gt; 5 menit</div>
+            <div>JPL tidak menerima sinyal healthStatus selama lebih dari 5 menit.</div>
             <div>${jpl.descript || ''}</div>
+            ${health && health.power ? `<div><strong>Power:</strong> ${health.power}</div>` : ''}
         </div>`;
 
     alertItem.addEventListener('click', function(e) {
@@ -912,12 +1083,23 @@ function renderJPLTable(reset = false) {
         const batteryPct = health && health.batteryPersentage != null ? health.batteryPersentage : null;
         const batteryClass = batteryPct != null && batteryPct < 20 ? 'battery-low' : '';
         const batteryText = batteryPct != null ? `${batteryPct}%` : '-';
+        // New fields
+        const voltage = health?.batteryVoltage != null ? health.batteryVoltage + ' V' : '-';
+        const charging = health?.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : '-';
+        const signal = health?.signalStrength || '-';
+        const lastUpdate = health?.datetime || '-';
         return `
             <tr class="data-row ${statusClass}" data-jpl="${id}">
                 <td class="${statusClass}">${status}</td>
-                <td>${id}</td><td>${jpl.ba || ''}</td><td>${jpl.descript || ''}</td>
+                <td>${id}</td>
+                <td>${jpl.ba || ''}</td>
+                <td>${jpl.descript || ''}</td>
                 <td>${power}</td>
                 <td class="${batteryClass}">${batteryText}</td>
+                <td>${voltage}</td>
+                <td>${charging}</td>
+                <td>${signal}</td>
+                <td>${lastUpdate}</td>
             </tr>`;
     }).join('');
 
@@ -934,11 +1116,15 @@ function updateJPLTableRow(jplId) {
     const health = healthStatus[jplId];
     const power = health ? formatPowerType(health.powerType) : '-';
     const batteryPct = health && health.batteryPersentage != null ? health.batteryPersentage : null;
-
     const cells = tr.children;
     cells[4].textContent = power;
     cells[5].textContent = batteryPct != null ? `${batteryPct}%` : '-';
     cells[5].className = batteryPct != null && batteryPct < 20 ? 'battery-low' : '';
+    // New fields
+    cells[6].textContent = health?.batteryVoltage != null ? health.batteryVoltage + ' V' : '-';
+    cells[7].textContent = health?.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : '-';
+    cells[8].textContent = health?.signalStrength || '-';
+    cells[9].textContent = health?.datetime || '-';
 }
 
 // --- Train Table ---

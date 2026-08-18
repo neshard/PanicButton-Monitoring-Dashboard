@@ -17,6 +17,45 @@ from .models import JPLMaster, TrainLocation, LEDStatus, PanicEvent, HealthStatu
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def normalize_health_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized = dict(payload)
+
+    # Map device payload to dashboard contract.
+    if not normalized.get("jplId") and normalized.get("funcloc"):
+        normalized["jplId"] = normalized["funcloc"]
+
+    if not normalized.get("powerType") and normalized.get("power"):
+        normalized["powerType"] = normalized["power"]
+
+    if not normalized.get("power") and normalized.get("powerType"):
+        normalized["power"] = normalized["powerType"]
+
+    # Support both batteryPercentage and the legacy misspelling.
+    if normalized.get("batteryPercentage") is None and normalized.get("batteryPersentage") is not None:
+        normalized["batteryPercentage"] = normalized["batteryPersentage"]
+    if normalized.get("batteryPersentage") is None and normalized.get("batteryPercentage") is not None:
+        normalized["batteryPersentage"] = normalized["batteryPercentage"]
+
+    for key in ("batteryPercentage", "batteryPersentage"):
+        value = normalized.get(key)
+        if value is None:
+            continue
+        try:
+            normalized[key] = float(value)
+        except (TypeError, ValueError):
+            pass
+
+    if "batteryCharging" in normalized and normalized["batteryCharging"] is not None:
+        value = str(normalized["batteryCharging"]).strip().lower()
+        normalized["batteryCharging"] = value in {"1", "true", "yes", "on", "charging"}
+
+    return normalized
+
+
 # eventType values that mean "cleared" — the live device feed isn't a strict
 # PBPRESSED/PBRELEASED binary, it also sends 'release'/'bahaya'/'perhatian' (Indonesian).
 RELEASE_EVENT_TYPES = {'RELEASE', 'PBRELEASE', 'PBRELEASED', 'AMAN', 'SAFE'}
@@ -195,8 +234,15 @@ async def lifespan(app: FastAPI):
                 main_loop
             )
 
-        elif 'powerType' in payload:
-            jpl_id = payload.get('jplId')
+        elif (
+            'powerType' in payload or
+            'power' in payload or
+            'batteryPercentage' in payload or
+            'batteryPersentage' in payload or
+            'funcloc' in payload
+        ):
+            payload = normalize_health_payload(payload)
+            jpl_id = payload.get('jplId') or payload.get('funcloc')
             if jpl_id:
                 health_status[jpl_id] = payload
                 asyncio.run_coroutine_threadsafe(

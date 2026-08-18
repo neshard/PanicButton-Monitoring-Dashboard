@@ -407,6 +407,21 @@ tbody tr:hover {
     display: none; /* badge doesn't need Leaflet's default tooltip arrow */
 }
 
+.jpl-power-tooltip {
+    background: #ff9f0a;
+    color: #241900;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 3px 8px;
+    border: none;
+    border-radius: 10px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    white-space: nowrap;
+}
+.jpl-power-tooltip::before {
+    display: none;
+}
+
 /* ===== Alert Stack (kept dark to pop on the dark map) ===== */
 #alert-stack {
     position: fixed;

@@ -19,13 +19,20 @@ class PanicEvent(BaseModel):
     eventType: str   # PBPRESSED or PBRELEASED
 
 class HealthStatus(BaseModel):
-    deviceId: str
-    jplId: str
-    batteryPersentage: int
-    batteryCharging: bool
-    powerType: str
-    datetime: str
-    
+    deviceId: Optional[str] = None
+    jplId: Optional[str] = None
+    funcloc: Optional[str] = None
+    status: Optional[str] = None
+    power: Optional[str] = None
+    powerType: Optional[str] = None
+    batteryVoltage: Optional[float] = None
+    batteryPercentage: Optional[float] = None
+    batteryPersentage: Optional[float] = None
+    batteryCharging: Optional[bool] = None
+    gsmNumber: Optional[str] = None
+    signalStrength: Optional[str] = None
+    datetime: Optional[str] = None
+
 class LEDStatus(BaseModel):
     vtdid: str          # extracted from topic
     ledMerah: str       # "0" or "1"
