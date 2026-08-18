@@ -12,7 +12,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from .clickhouse import ClickHouseDB
 from .mqtt_client import MQTTClientManager
-from .models import JPLMaster, TrainLocation, LEDStatus, PanicEvent
+from .models import JPLMaster, TrainLocation, LEDStatus, PanicEvent, HealthStatus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ train_data: Dict[str, dict] = {}
 led_status: Dict[str, dict] = {}
 panic_alerts: List[dict] = []
 pending_train_updates: Dict[str, dict] = {}  # vtdid -> latest payload (coalesced)
+health_status: Dict[str, dict] = {}  # jplId -> latest battery/power payload
 
 
 class ConnectionManager:
@@ -80,6 +81,9 @@ class ConnectionManager:
             await websocket.send_text(json.dumps(data))
         if panic_alerts:
             data = {"type": "panic_alerts", "data": panic_alerts}
+            await websocket.send_text(json.dumps(data))
+        if health_status:
+            data = {"type": "health_list", "data": list(health_status.values())}
             await websocket.send_text(json.dumps(data))
 
 
@@ -190,6 +194,15 @@ async def lifespan(app: FastAPI):
                 manager.broadcast(json.dumps({"type": "panic_alert", "data": broadcast_payload})),
                 main_loop
             )
+
+        elif 'powerType' in payload:
+            jpl_id = payload.get('jplId')
+            if jpl_id:
+                health_status[jpl_id] = payload
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast(json.dumps({"type": "health_update", "data": payload})),
+                    main_loop
+                )
 
         elif 'ledMerah' in payload:
             vtdid = payload.get('vtdid')

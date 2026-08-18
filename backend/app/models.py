@@ -18,6 +18,14 @@ class PanicEvent(BaseModel):
     eventId: str
     eventType: str   # PBPRESSED or PBRELEASED
 
+class HealthStatus(BaseModel):
+    deviceId: str
+    jplId: str
+    batteryPersentage: int
+    batteryCharging: bool
+    powerType: str
+    datetime: str
+    
 class LEDStatus(BaseModel):
     vtdid: str          # extracted from topic
     ledMerah: str       # "0" or "1"

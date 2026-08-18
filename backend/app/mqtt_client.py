@@ -26,6 +26,12 @@ class MQTTClientManager:
             f"{Config.PANIC_CLIENT_ID}-{suffix}",
             Config.PANIC_TOPIC_EVENT
         )
+        self.health_client = self._create_client(
+            Config.PANIC_HOST, Config.PANIC_PORT,
+            Config.PANIC_USERNAME, Config.PANIC_PASSWORD,
+            f"{Config.PANIC_CLIENT_ID}-health-{suffix}",
+            Config.PANIC_TOPIC_HEALTHSTATUS
+        )
         self.led_client = self._create_client(
             Config.LED_HOST, Config.LED_PORT,
             Config.LED_USERNAME, Config.LED_PASSWORD,
@@ -34,7 +40,7 @@ class MQTTClientManager:
             qos=Config.LED_QOS
         )
 
-        self.clients = [self.locotrack_client, self.panic_client, self.led_client]
+        self.clients = [self.locotrack_client, self.panic_client, self.health_client, self.led_client]
 
     def _create_client(self, host, port, username, password, client_id, topic, qos=1):
         client = mqtt.Client(client_id=client_id, clean_session=True)

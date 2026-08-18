@@ -12,13 +12,14 @@ class Config:
     LOCOTRACK_TOPIC = os.getenv("LOCOTRACK_TOPIC")
     LOCOTRACK_CLIENT_ID = os.getenv("LOCOTRACK_CLIENT_ID", "backend-locotrack")
 
-    # MQTT Panic
+    # MQTT Panic (button events + health/battery status, same broker)
     PANIC_HOST = os.getenv("PANIC_HOST")
     PANIC_PORT = int(os.getenv("PANIC_PORT", 1883))
     PANIC_USERNAME = os.getenv("PANIC_USERNAME", "")
     PANIC_PASSWORD = os.getenv("PANIC_PASSWORD", "")
     PANIC_CLIENT_ID = os.getenv("PANIC_CLIENT_ID", "backend-panic")
     PANIC_TOPIC_EVENT = os.getenv("PANIC_TOPIC_EVENT")
+    PANIC_TOPIC_HEALTHSTATUS = os.getenv("PANIC_TOPIC_HEALTHSTATUS")
 
     # MQTT LED
     LED_HOST = os.getenv("LED_HOST")

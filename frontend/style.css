@@ -348,6 +348,9 @@ tbody tr:hover {
 .status-hati-hati { color: var(--status-hati-hati); font-weight: 600; }
 .status-bahaya { color: var(--status-bahaya); font-weight: 600; }
 
+/* JPL health/battery — low battery (<20%) shown in red */
+.battery-low { color: var(--status-bahaya); font-weight: 600; }
+
 /* ===== Train markers (pin shape; size set inline by JS so it always matches the Leaflet anchor) ===== */
 .train-icon {
     background: transparent;
