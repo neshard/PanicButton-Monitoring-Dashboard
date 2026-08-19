@@ -402,7 +402,6 @@ function handleWebSocketMessage(msg) {
             setJPLState(h.jplId, 'release');
             updateJPLPowerWarningBadge(h.jplId);
             updateJPLPopupContent(h.jplId);
-            updateJPLInfoPanel(h.jplId);
             checkLowBattery(h.jplId);
             checkHealthStaleness();
         }
@@ -615,10 +614,10 @@ function updateJPLPopupContent(jplId) {
 
     if (health) {
         const power = health.powerType || health.power || 'N/A';
-        if (power && power !== 'N/A') infoLines.push(`Power: ${power}`);
+        if (power && power !== 'N/A') infoLines.push(`Power: <b>${power}</b>`);
         if (health.batteryVoltage != null) infoLines.push(`Battery Voltage: ${health.batteryVoltage} V`);
-        if (health.batteryPersentage != null) infoLines.push(`Battery: ${health.batteryPersentage}%`);
-        if (health.batteryCharging != null) infoLines.push(`Battery Charging: ${parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak'}`);
+        if (health.batteryPersentage != null) infoLines.push(`Battery: <b>${health.batteryPersentage}%</b>`);
+        if (health.batteryCharging != null) infoLines.push(`Battery Charging: <b>${parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak'}</b>`);
         if (health.gsmNumber) infoLines.push(`GSM: ${health.gsmNumber}`);
         if (health.signalStrength) infoLines.push(`Signal: ${health.signalStrength}`);
         if (health.datetime) infoLines.push(`Last Update: ${health.datetime}`);
@@ -645,7 +644,6 @@ function addJPLMarker(jpl) {
     marker.on('click', () => {
         map.setView([lat, lon], 14);
         updateJPLPopupContent(id);
-        updateJPLInfoPanel(id);
     });
     jplMarkers[id] = marker;
     setJPLState(id, 'release');
@@ -685,39 +683,6 @@ function updateJPLPowerWarningBadge(jplId) {
     }
 }
 
-function updateJPLInfoPanel(jplId) {
-    const body = document.getElementById('info-panel-body');
-    if (!body) return;
-
-    const existing = body.querySelector('.info-jpl-health');
-    if (existing) existing.remove();
-
-    const jpl = jplData[jplId] || {};
-    const health = healthStatus[jplId] || {};
-    const fields = [
-        ['Status', activeAlerts.has(jplId) ? 'Bahaya' : (health.status || 'Aman')],
-        ['Power', health.powerType || health.power || 'N/A'],
-        ['Battery Voltage', health.batteryVoltage != null ? `${health.batteryVoltage} V` : 'N/A'],
-        ['Battery Percentage', health.batteryPersentage != null ? `${health.batteryPersentage}%` : 'N/A'],
-        ['Battery Charging', health.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : 'N/A'],
-        ['GSM Number', health.gsmNumber || 'N/A'],
-        ['Signal Strength', health.signalStrength || 'N/A'],
-        ['Last Update', health.datetime || 'N/A']
-    ];
-
-    const panel = document.createElement('div');
-    panel.className = 'info-section info-jpl-health';
-    panel.innerHTML = `
-        <h4>JPL Health</h4>
-        ${fields.map(([label, value]) => `
-            <div class="info-row">
-                <span style="color:#9aa0a6;">${label}</span>
-                <strong style="margin-left:auto; text-align:right;">${value}</strong>
-            </div>
-        `).join('')}
-    `;
-    body.appendChild(panel);
-}
 function startPulse(jplId) {
     const marker = jplMarkers[jplId]; if (!marker) return;
     if (jplPulseIntervals[jplId]) clearInterval(jplPulseIntervals[jplId]);
