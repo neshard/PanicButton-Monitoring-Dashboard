@@ -119,16 +119,20 @@
                 <div id="info-panel-body">
                     <div class="info-section">
                         <h4>Titik JPL (Perlintasan)</h4>
-                        <div class="info-row"><span class="legend-dot" style="background:#0a84ff;"></span> Biru - kondisi aman</div>
-                        <div class="info-row"><span class="legend-dot pulse-dot" style="background:#ff453a;"></span> Merah berkedip - tombol panic ditekan (bahaya)</div>
-                        <div class="info-row"><span class="legend-ring" style="border-color:#ff453a;"></span> Lingkaran merah (&plusmn;1.1 km) - zona bahaya</div>
-                        <div class="info-row"><span class="legend-ring" style="border-color:#ff9f0a;"></span> Lingkaran kuning (&plusmn;3 km) - zona waspada</div>
+                        <div class="info-row"><span class="legend-dot pulse-dot" style="background:#ff453a"></span> Merah berkedip - Tombol panic ditekan (Bahaya)</div>
+                        <div class="info-row"><span class="legend-dot" style="background:#ffd60a"></span> Kuning - Sinyal hilang / Offline (&gt; 5 menit)</div>
+                        <div class="info-row"><span class="legend-dot" style="background:#ff9f0a"></span> Oranye - Peringatan baterai lemah (&lt; 20%)</div>
+                        <div class="info-row"><span class="legend-dot" style="background:#0a84ff"></span> Biru - Kondisi aman / Normal</div>
+                        <div class="info-row"><span class="legend-dot" style="background:#8a8f98"></span> Abu-abu - Belum ada data kesehatan</div>
+                        <div class="info-row"><span class="legend-ring" style="border-color:#ff453a"></span> Lingkaran merah (±1.1 km) - Zona bahaya</div>
+                        <div class="info-row"><span class="legend-ring" style="border-color:#ff9f0a"></span> Lingkaran oranye (±3 km) - Zona waspada</div>
                     </div>
                     <div class="info-section">
                         <h4>Locotrack (Kereta)</h4>
-                        <div class="info-row"><span class="legend-dot" style="background:#30d158;"></span> Cincin hijau - aman</div>
-                        <div class="info-row"><span class="legend-dot" style="background:#ffd60a;"></span> Cincin kuning - hati-hati</div>
-                        <div class="info-row"><span class="legend-dot" style="background:#ff453a;"></span> Cincin merah - bahaya</div>
+                        <!-- 🚀 Uses the new .legend-train-pin class to match the actual SVG map icon -->
+                        <div class="info-row"><span class="legend-train-pin" style="border-color:#30d158"></span> Cincin hijau - Aman</div>
+                        <div class="info-row"><span class="legend-train-pin" style="border-color:#ffd60a"></span> Cincin kuning - Hati-hati</div>
+                        <div class="info-row"><span class="legend-train-pin" style="border-color:#ff453a"></span> Cincin merah - Bahaya</div>
                     </div>
                     <div class="info-section">
                         <h4>Garis Rel</h4>

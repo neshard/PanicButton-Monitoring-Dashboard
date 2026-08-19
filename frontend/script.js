@@ -413,21 +413,27 @@ function handleWebSocketMessage(msg) {
 function getTrainIconSize() {
     return Math.max(16, Math.min(32, 8 + map.getZoom() * 2));
 }
+function getMapOverlayScale() {
+    return Math.max(0.62, Math.min(1, 0.62 + (map.getZoom() - 5) * 0.042));
+}
+function updateMapOverlayScale() {
+    // Keep fixed-screen labels visually proportional to the map markers while zooming.
+    const scale = getMapOverlayScale();
+    map.getContainer().style.setProperty('--map-overlay-scale', scale.toFixed(3));
+}
 function createTrainIcon(bodyColor, ringColor) {
     const w = getTrainIconSize();
     const h = Math.round(w * 1.333);
+    
+    // 🚀 FIX: Scale the popup anchor so it doesn't detach from the pin tip on zoom
+    const scale = getMapOverlayScale();
+    
     return L.divIcon({
         className: 'train-icon',
-        html: `<div class="train-pin-wrap" style="width:${w}px;height:${h}px;">
-            <svg class="train-pin-svg" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 1C6.1 1 1.3 5.8 1.3 11.7c0 8.3 10.7 18.6 10.7 18.6s10.7-10.3 10.7-18.6C22.7 5.8 17.9 1 12 1z" fill="${bodyColor}" stroke="${ringColor}" stroke-width="2.5"/>
-            </svg>
-            <span class="train-pin-icon" style="font-size:${Math.round(w * 0.42)}px;">🚆</span>
-        </div>`,
-        // Anchored at the pin's tip (bottom-center) so it stands exactly on its coordinate, not floating above it.
-        // popupAnchor shifts the popup's own anchor up by the full icon height so it opens
-        // above the pin instead of covering it (Leaflet defaults to opening right at iconAnchor).
-        iconSize: [w, h], iconAnchor: [w / 2, h], popupAnchor: [0, -h]
+        html: `<div class="train-pin-wrap" style="width:${w}px;height:${h}px;"> <svg class="train-pin-svg" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg"> <path d="M12 1C6.1 1 1.3 5.8 1.3 11.7c0 8.3 10.7 18.6 10.7 18.6s10.7-10.3 10.7-18.6C22.7 5.8 17.9 1 12 1z" fill="${bodyColor}" stroke="${ringColor}" stroke-width="2.5"/> </svg> <span class="train-pin-icon" style="font-size:${Math.round(w * 0.42)}px;">🚆</span> </div>`,
+        iconSize: [w, h], 
+        iconAnchor: [w / 2, h], 
+        popupAnchor: [0, -(h * scale)] // Scaled to match visual height
     });
 }
 function trainColors(vtdid) {
@@ -474,19 +480,25 @@ function updateTrainJPLTooltip(vtdid, nearestJPL) {
     if (nearestJPL === undefined) nearestJPL = getNearestActiveJPLForTrain(vtdid);
     if (nearestJPL) {
         const label = `⚠ ${nearestJPL.distanceKm.toFixed(2)} km`;
+        const w = getTrainIconSize();
+        const h = Math.round(w * 1.333);
+        
+        // 🚀 FIX: Calculate visual height using the map overlay scale
+        const scale = getMapOverlayScale();
+        const visualHeight = h * scale; 
+        const offset = L.point(0, -(visualHeight + 2)); // Keep a 2px clearance above the visual icon
+        
         if (marker.getTooltip()) {
             marker.setTooltipContent(label);
+            marker.getTooltip().options.offset = offset;
+            marker.getTooltip().update();
         } else {
-            const w = getTrainIconSize();
-            const h = Math.round(w * 1.333);
             marker.bindTooltip(label, {
                 permanent: true,
                 direction: 'top',
-                offset: [0, -(h + 2)], // small clearance right above the icon
+                offset: offset,
                 className: 'train-jpl-tooltip'
             });
-            // If the marker's popup happens to already be open, keep the badge hidden
-            // until it closes, instead of showing both stacked above the icon at once.
             if (marker.isPopupOpen()) marker.closeTooltip();
         }
     } else if (marker.getTooltip()) {
@@ -563,10 +575,22 @@ function getNearestActiveJPLForTrain(vtdid) {
     return getNearestActiveJPL(parseFloat(train.L_LAT), parseFloat(train.L_LON));
 }
 function updateTrainScale() {
+    updateMapOverlayScale();
     Object.keys(trainMarkers).forEach(vtdid => {
         const marker = trainMarkers[vtdid];
         const c = trainColors(vtdid);
         marker.setIcon(createTrainIcon(c.body, c.ring));
+        updateTrainJPLTooltip(vtdid);
+    });
+    
+    // 🚀 FIX: Recalculate JPL tooltip offsets on zoom using visual scale
+    Object.keys(jplPowerWarningState).forEach(jplId => {
+        const marker = jplMarkers[jplId];
+        if (!marker || !marker.getTooltip()) return;
+        const scale = getMapOverlayScale();
+        const visualHeight = 12 * scale;
+        marker.getTooltip().options.offset = L.point(0, -(visualHeight + 2));
+        marker.getTooltip().update();
     });
 }
 map.on('zoomend', updateTrainScale);
@@ -635,18 +659,25 @@ function updateJPLPowerWarningBadge(jplId) {
     const health = healthStatus[jplId];
     const power = health ? String(health.powerType || health.power || '').toUpperCase() : '';
     const isBackup = power === 'BATTERY';
+    
+    // 🚀 FIX: Scale the base diameter (12px) to match the visual zoom scale
+    const scale = getMapOverlayScale();
+    const visualHeight = 12 * scale; 
+    const offset = L.point(0, -(visualHeight + 2));
 
     if (isBackup) {
         if (!jplPowerWarningState[jplId]) {
             marker.bindTooltip('⚠️ Backup power: BATTERY', {
                 permanent: true,
                 direction: 'top',
-                offset: [0, -12],
+                offset: offset,
                 className: 'jpl-power-tooltip'
             });
             jplPowerWarningState[jplId] = true;
         } else {
             marker.setTooltipContent('⚠️ Backup power: BATTERY');
+            marker.getTooltip().options.offset = offset;
+            marker.getTooltip().update();
         }
     } else if (jplPowerWarningState[jplId]) {
         marker.unbindTooltip();
@@ -697,14 +728,72 @@ function startPulse(jplId) {
         marker.setRadius(r);
     }, 200);
 }
+// ---- JPL Color State Helpers ----
+function isJPLStale(jplId) {
+    const h = healthStatus[jplId];
+    if (!h) return false;
+    const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+    return !isNaN(firstSeenAt) && (Date.now() - firstSeenAt) > HEALTH_STALE_MS;
+}
+
+function getJPLFillColor(jplId) {
+    if (activeAlerts.has(jplId)) return '#ff453a'; // 1. Panic (Red)
+    const h = healthStatus[jplId];
+    if (!h) return '#8a8f98'; // 2. No health data ever (Grey)
+    
+    const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+    const isStale = !isNaN(firstSeenAt) && (Date.now() - firstSeenAt) > HEALTH_STALE_MS;
+    if (isStale) return '#ffd60a'; // 3. Stale / Offline (Yellow)
+    
+    const pct = Number(h.batteryPersentage);
+    const charging = parseCharging(h.batteryCharging);
+    const powerType = String(h.powerType || h.power || '').toUpperCase();
+    
+    // 4. Low Battery Warning (Orange) - ONLY if not on LINE power
+    const isLowBattery = pct < 20 && !charging && powerType !== 'LINE';
+    if (isLowBattery) return '#ff9f0a'; 
+    
+    return '#0a84ff'; // 5. Healthy / Normal (Blue)
+}
+
+function updateJPLMarkerColor(jplId) {
+    const marker = jplMarkers[jplId];
+    if (!marker || activeAlerts.has(jplId)) return; // Don't override panic red
+    
+    const fillColor = getJPLFillColor(jplId);
+    const isGray = fillColor === '#8a8f98';
+    
+    marker.setStyle({
+        fillColor: fillColor,
+        color: isGray ? '#dfe3e8' : '#fff',
+        fillOpacity: isGray ? 0.7 : 0.8,
+        opacity: 1,
+        weight: 2
+    });
+}
+
+// ---- JPL Pulse & Radius Functions (Syntax Errors Fixed) ----
+function startPulse(jplId) {
+    const marker = jplMarkers[jplId]; if (!marker) return;
+    if (jplPulseIntervals[jplId]) clearInterval(jplPulseIntervals[jplId]);
+    let growing = true;
+    jplPulseIntervals[jplId] = setInterval(() => {
+        let r = marker.getRadius();
+        if (growing) { r += 1; if (r >= 12) growing = false; } else { r -= 1; if (r <= 8) growing = true; }
+        marker.setRadius(r);
+    }, 200);
+}
+
 function stopPulse(jplId) {
     if (jplPulseIntervals[jplId]) { clearInterval(jplPulseIntervals[jplId]); delete jplPulseIntervals[jplId]; }
     const marker = jplMarkers[jplId];
     if (marker) {
         marker.setRadius(6);
-        const isGray = !healthStatus[jplId] && !activeAlerts.has(jplId);
+        // 🚀 Uses dynamic 5-tier color logic
+        const fillColor = getJPLFillColor(jplId);
+        const isGray = fillColor === '#8a8f98';
         marker.setStyle({
-            fillColor: isGray ? '#8a8f98' : '#0a84ff',
+            fillColor: fillColor,
             color: isGray ? '#dfe3e8' : '#fff',
             fillOpacity: isGray ? 0.7 : 0.8,
             opacity: 1,
@@ -712,6 +801,7 @@ function stopPulse(jplId) {
         });
     }
 }
+
 function startRadiusPulse(jplId) {
     const layers = jplRadiusLayers[jplId]; if (!layers) return;
     stopRadiusPulse(jplId);
@@ -725,9 +815,11 @@ function startRadiusPulse(jplId) {
         yellow.setStyle({ fillOpacity: 0.06 + t * 0.28, opacity: 0.35 + t * 0.45, weight: 2 + t * 1.5 });
     }, 150);
 }
+
 function stopRadiusPulse(jplId) {
     if (jplRadiusPulseIntervals[jplId]) { clearInterval(jplRadiusPulseIntervals[jplId]); delete jplRadiusPulseIntervals[jplId]; }
 }
+
 function updateRadiusCircles(jplId, state) {
     if (jplRadiusLayers[jplId]) {
         jplRadiusLayers[jplId].forEach(layer => map.removeLayer(layer));
@@ -743,15 +835,22 @@ function updateRadiusCircles(jplId, state) {
     jplRadiusLayers[jplId] = [red, yellow];
     startRadiusPulse(jplId);
 }
+
 function setJPLState(jplId, state) {
     const marker = jplMarkers[jplId]; if (!marker) return;
     if (!healthStatus[jplId] && !activeAlerts.has(jplId)) {
-        stopPulse(jplId);
-        marker.setStyle({ fillColor: '#8a8f98', color: '#dfe3e8', fillOpacity: 0.7, opacity: 1, weight: 2 });
+        stopPulse(jplId); // Will automatically set to grey via getJPLFillColor
         updateRadiusCircles(jplId, 'release');
+        const popup = marker.getPopup();
+        if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${formatStatusLabel('release')}`));
         return;
     }
-    if (state === 'pbpressed') { marker.setStyle({ fillColor: '#ff453a' }); startPulse(jplId); } else { stopPulse(jplId); }
+    if (state === 'pbpressed') { 
+        marker.setStyle({ fillColor: '#ff453a' }); 
+        startPulse(jplId); 
+    } else { 
+        stopPulse(jplId); // Will automatically set to blue, yellow, or orange
+    }
     updateRadiusCircles(jplId, state);
     const popup = marker.getPopup();
     if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${formatStatusLabel(state)}`));
@@ -952,13 +1051,19 @@ function checkLowBattery(jplId) {
     if (!h || h.batteryPersentage == null) return;
     const pct = Number(h.batteryPersentage);
     const charging = parseCharging(h.batteryCharging);
-    const isLow = pct < 20 && !charging;
+    const powerType = String(h.powerType || h.power || '').toUpperCase();
+    
+    // 🚀 Only trigger if running on battery power. If on LINE, it's just maintenance.
+    const isLow = pct < 20 && !charging && powerType !== 'LINE';
+    
     if (isLow && !lowBatteryAlerted.has(jplId)) {
         lowBatteryAlerted.add(jplId);
         addLowBatteryAlert(jplId, h);
+        updateJPLMarkerColor(jplId); // 🚀 Paint Orange immediately
     } else if (!isLow && lowBatteryAlerted.has(jplId)) {
         lowBatteryAlerted.delete(jplId);
         removeAlertCardsBy('data-health-jpl', jplId);
+        updateJPLMarkerColor(jplId); // 🚀 Paint Blue when recovered
     }
 }
 function addLowBatteryAlert(jplId, health) {
@@ -1001,12 +1106,15 @@ function checkHealthStaleness() {
         const h = healthStatus[jplId];
         const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
         const isStale = !isNaN(firstSeenAt) && (now - firstSeenAt) > HEALTH_STALE_MS;
+        
         if (isStale && !staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.add(jplId);
             addInactivePanicButtonAlert(jplId, h);
+            updateJPLMarkerColor(jplId); // 🚀 Paint Yellow
         } else if (!isStale && staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.delete(jplId);
             removeAlertCardsBy('data-stale-jpl', jplId);
+            updateJPLMarkerColor(jplId); // 🚀 Paint Blue (Recovered)
         }
     });
 }

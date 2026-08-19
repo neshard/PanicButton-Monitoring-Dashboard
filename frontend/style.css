@@ -161,6 +161,7 @@ body {
     bottom: 0;
     width: 100%;
     background: #1a1a1a; /* matches dark tiles while loading */
+    --map-overlay-scale: 1;
 }
 
 /* 🚀 ADD THIS BLOCK BELOW #map */
@@ -396,8 +397,8 @@ tbody tr:hover {
     background: #ff9f0a;
     color: #241900;
     font-weight: 700;
-    font-size: 11px;
-    padding: 2px 7px;
+    font-size: calc(11px * var(--map-overlay-scale));
+    padding: calc(2px * var(--map-overlay-scale)) calc(7px * var(--map-overlay-scale));
     border: none;
     border-radius: 10px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.4);
@@ -411,8 +412,8 @@ tbody tr:hover {
     background: #ff9f0a;
     color: #241900;
     font-weight: 700;
-    font-size: 11px;
-    padding: 3px 8px;
+    font-size: calc(11px * var(--map-overlay-scale));
+    padding: calc(3px * var(--map-overlay-scale)) calc(8px * var(--map-overlay-scale));
     border: none;
     border-radius: 10px;
     box-shadow: 0 2px 6px rgba(0,0,0,0.4);
@@ -651,6 +652,17 @@ tbody tr:hover {
     border-radius: 50%;
     border: 2px solid;
     background: transparent;
+}
+
+.legend-train-pin {
+    flex-shrink: 0;
+    width: 12px;
+    height: 16px;
+    background: rgb(255, 249, 179); /* Matches the train body color in your JS */
+    border: 2px solid;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
 
 .legend-line {
