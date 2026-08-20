@@ -121,6 +121,9 @@ class ClickHouseDB:
         """Count JPLs whose latest event today is still a press/danger event (not yet released) —
         the 'JPL Aktif' stat, sourced from the DB log (today only) so it stays accurate
         even if the backend's in-memory alert state was lost (e.g. after a restart)."""
+        # Legacy reference logic: Active JPLs = JPLs whose latest event today is
+        # not a release event. The live dashboard now counts active JPLs from its
+        # PBPRESSED/PBRELEASED state instead of using this database-based count.
         release_list = ", ".join(self._RELEASE_EVENT_TYPES)
         query = (
             f"SELECT count() FROM ("
