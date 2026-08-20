@@ -19,11 +19,15 @@ function statusClassFor(label) {
 }
 
 // ---- Map Setup ----
+const INITIAL_MAP_CENTER = [-2.5, 118.0];
+const INITIAL_MAP_ZOOM = 5;
 const map = L.map('map', {
-    center: [-2.5, 118.0],
-    zoom: 5,
+    center: INITIAL_MAP_CENTER,
+    zoom: INITIAL_MAP_ZOOM,
     zoomControl: true,
-    preferCanvas: true
+    preferCanvas: true,
+    zoomSnap: 0,   // allow fractional zoom so the menu-open shift can zoom out slightly
+    zoomDelta: 1   // keep +/- buttons and keyboard zoom stepping by whole levels
 });
 
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
@@ -100,18 +104,72 @@ const hamburger = document.getElementById('hamburger');
 const sidebarContent = document.getElementById('sidebar-content');
 const closeSidebar = document.getElementById('close-sidebar');
 
+// Slight zoom-out + rightward shift while the menu covers the left side of the map
+const MENU_MAP_ZOOM_DELTA = 0.5;
+const MENU_MAP_SHIFT_PX = 230;
+function isMenuOpen() {
+    return !sidebarContent.classList.contains('hidden');
+}
+// Shifts latlng by MENU_MAP_SHIFT_PX at the given zoom (right if open, left/back if !open).
+function shiftLatLngForMenu(latlng, zoom, open) {
+    const offsetX = (open ? -1 : 1) * MENU_MAP_SHIFT_PX;
+    const point = map.project(latlng, zoom).add(L.point(offsetX, 0));
+    return map.unproject(point, zoom);
+}
+function shiftMapForMenu(open) {
+    const targetZoom = map.getZoom() + (open ? -MENU_MAP_ZOOM_DELTA : MENU_MAP_ZOOM_DELTA);
+    // Compute the offset at the target zoom (not the current one) so the shift
+    // is exactly MENU_MAP_SHIFT_PX once the zoom animation settles, instead of
+    // being diluted by the simultaneous zoom-out.
+    const targetCenter = shiftLatLngForMenu(map.getCenter(), targetZoom, open);
+    map.setView(targetCenter, targetZoom, { animate: true, duration: 0.5 });
+}
+// Focuses the map on a clicked JPL/train marker. If the menu is open, applies the same
+// zoom-out + rightward shift as shiftMapForMenu (so the marker clears the sidebar);
+// otherwise centers dead-on at the requested zoom.
+function focusMapOn(latlng, zoom) {
+    if (isMenuOpen()) {
+        const targetZoom = zoom - MENU_MAP_ZOOM_DELTA;
+        map.setView(shiftLatLngForMenu(latlng, targetZoom, true), targetZoom);
+    } else {
+        map.setView(latlng, zoom);
+    }
+}
+
 function openSidebar() {
     sidebarContent.classList.remove('hidden');
     hamburger.style.display = 'none';
     setTimeout(() => map.invalidateSize(), 100);
+    shiftMapForMenu(true);
 }
 function closeSidebarFn() {
     sidebarContent.classList.add('hidden');
     hamburger.style.display = 'flex';
     setTimeout(() => map.invalidateSize(), 100);
+    shiftMapForMenu(false);
 }
 hamburger.addEventListener('click', openSidebar);
 closeSidebar.addEventListener('click', closeSidebarFn);
+
+// ---- Top-bar title: reset the map back to its initial landing view ----
+// Mirrors what a fresh page load actually shows: fit to the Java-density bounds
+// (autoFocusOnDensity), then zoom into any currently-active alerts, same as the
+// initialPBZoomDone flow on connect.
+document.getElementById('top-bar-title').addEventListener('click', () => {
+    map.closePopup();
+    // Close the sidebar's DOM state directly instead of calling closeSidebarFn() —
+    // that also kicks off its own animated shiftMapForMenu() pan/zoom, and stacking
+    // that with the fitBounds() below in the same tick confused Leaflet's zoom-animation
+    // state machine (the view wouldn't update on the first click, only the second).
+    if (isMenuOpen()) {
+        sidebarContent.classList.add('hidden');
+        hamburger.style.display = 'flex';
+        setTimeout(() => map.invalidateSize(), 100);
+    }
+    infoWidget.classList.remove('open');
+    map.fitBounds(JAVA_BOUNDS, { padding: [20, 20] });
+    if (activeAlerts.size > 0) zoomToActiveJPLs();
+});
 
 // ---- Info / Legend Widget Toggle (panel pulls up out of the toggle box) ----
 const infoWidget = document.getElementById('info-widget');
@@ -204,20 +262,20 @@ function setupTableDelegation() {
         const tr = e.target.closest('tr.data-row'); if (!tr) return;
         const jpl = jplData[tr.dataset.jpl];
         if (jpl && jpl.latitude != null && jpl.longitude != null) {
-            map.setView([jpl.latitude, jpl.longitude], 14);
+            focusMapOn([jpl.latitude, jpl.longitude], 14);
             if (jplMarkers[tr.dataset.jpl]) jplMarkers[tr.dataset.jpl].openPopup();
         }
     });
     document.querySelector('#train-table tbody').addEventListener('click', function(e) {
         const tr = e.target.closest('tr.data-row'); if (!tr) return;
         const marker = trainMarkers[tr.dataset.vtdid];
-        if (marker) { map.setView(marker.getLatLng(), 14); marker.openPopup(); }
+        if (marker) { focusMapOn(marker.getLatLng(), 14); marker.openPopup(); }
     });
     document.querySelector('#log-table tbody').addEventListener('click', function(e) {
         const tr = e.target.closest('tr.data-row'); if (!tr) return;
         const jpl = jplData[tr.dataset.funcloc];
         if (jpl && jpl.latitude != null && jpl.longitude != null) {
-            map.setView([jpl.latitude, jpl.longitude], 14);
+            focusMapOn([jpl.latitude, jpl.longitude], 14);
             if (jplMarkers[tr.dataset.funcloc]) jplMarkers[tr.dataset.funcloc].openPopup();
         }
     });
@@ -460,7 +518,7 @@ function updateTrain(data) {
     } else {
         marker = L.marker([lat, lon], { icon: createTrainIcon(c.body, c.ring) }).addTo(map);
         marker.options._ring = c.ring;
-        marker.bindPopup(createTrainPopup(data, ledStatus[vtdid] || {}, nearestJPL));
+        marker.bindPopup(createTrainPopup(data, ledStatus[vtdid] || {}, nearestJPL), { autoPan: false });
         // The distance badge and the full status popup both sit above the icon, so only
         // one can be shown at a time: hide the badge while the popup is open, bring it
         // back once the popup closes (bound once here, not on every position update).
@@ -640,9 +698,9 @@ function addJPLMarker(jpl) {
     const marker = L.circleMarker([lat, lon], {
         renderer: jplRenderer, radius: 6, fillColor: '#0a84ff', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8
     }).addTo(map);
-    marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">${formatStatusLabel('release')}</span>`);
+    marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">${formatStatusLabel('release')}</span>`, { autoPan: false });
     marker.on('click', () => {
-        map.setView([lat, lon], 14);
+        focusMapOn([lat, lon], 14);
         updateJPLPopupContent(id);
     });
     jplMarkers[id] = marker;
@@ -656,8 +714,12 @@ function updateJPLPowerWarningBadge(jplId) {
     if (!marker) return;
     const health = healthStatus[jplId];
     const power = health ? String(health.powerType || health.power || '').toUpperCase() : '';
-    const isBackup = power === 'BATTERY';
-    
+    const pct = health ? Number(health.batteryPersentage) : NaN;
+    const charging = health ? parseCharging(health.batteryCharging) : false;
+    // Only show the badge while actually running low on battery power — it must
+    // disappear again once the battery is no longer low (charged back up, charging, or on LINE power).
+    const isBackup = power === 'BATTERY' && !isNaN(pct) && pct < 20 && !charging;
+
     // 🚀 FIX: Scale the base diameter (12px) to match the visual zoom scale
     const scale = getMapOverlayScale();
     const visualHeight = 12 * scale; 
@@ -901,7 +963,7 @@ function addJPLPanicAlert(alertData) {
     alertItem.innerHTML = `
         <div class="alert-header">
             <!-- 🚀 Changed text color to orange (#ff9f0a) -->
-            <span style="color:#ff9f0a; font-weight:bold;">🚨 PANIC BUTTON: ${jplId}</span>
+            <span style="color:#ff9f0a; font-weight:bold;"><span class="alert-emoji">🚨</span> PANIC BUTTON: ${jplId}</span>
             <button class="alert-close" data-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">
@@ -913,7 +975,7 @@ function addJPLPanicAlert(alertData) {
     alertItem.addEventListener('click', function(e) {
         if (e.target.closest('.alert-close')) return;
         if (jpl && jpl.latitude != null && jpl.longitude != null) {
-            map.setView([jpl.latitude, jpl.longitude], 14);
+            focusMapOn([jpl.latitude, jpl.longitude], 14);
             if (jplMarkers[jplId]) jplMarkers[jplId].openPopup();
         }
     });
@@ -986,7 +1048,7 @@ function addTrainLEDAlert(led) {
         if (e.target.closest('.alert-close')) return;
         const marker = trainMarkers[vtdid];
         if (marker) {
-            map.setView(marker.getLatLng(), 14);
+            focusMapOn(marker.getLatLng(), 14);
             marker.openPopup();
         }
     });
@@ -1003,7 +1065,7 @@ function addTrainLEDAlert(led) {
 function focusJPL(jplId) {
     const jpl = jplData[jplId];
     if (jpl && jpl.latitude != null && jpl.longitude != null) {
-        map.setView([jpl.latitude, jpl.longitude], 14);
+        focusMapOn([jpl.latitude, jpl.longitude], 14);
         if (jplMarkers[jplId]) jplMarkers[jplId].openPopup();
     }
 }
@@ -1043,7 +1105,7 @@ function addLowBatteryAlert(jplId, health) {
 
     alertItem.innerHTML = `
         <div class="alert-header">
-            <span style="color:#ff453a; font-weight:bold;">🔋 WARNING LOW BATTERY: ${jplId}</span>
+            <span style="color:#ff453a; font-weight:bold;"><span class="alert-emoji">🔋</span> WARNING LOW BATTERY: ${jplId}</span>
             <button class="alert-close" data-health-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">

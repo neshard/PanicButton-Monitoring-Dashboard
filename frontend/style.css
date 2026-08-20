@@ -72,6 +72,7 @@ body {
     font-weight: 700;
     color: var(--text-primary);
     white-space: nowrap;
+    cursor: pointer;
 }
 
 #backend-status {
@@ -476,6 +477,24 @@ tbody tr:hover {
 .alert-item .alert-body {
     margin-top: 6px;
     font-size: 14px;
+}
+
+/* Battery-warning and panic-button cards: header matches the top-bar title size (16px),
+   body text scaled down to match proportionally. */
+.alert-battery .alert-header,
+.alert-jpl .alert-header {
+    font-size: 16px;
+}
+
+.alert-battery .alert-body,
+.alert-jpl .alert-body {
+    font-size: 13px;
+}
+
+.alert-battery .alert-header .alert-emoji,
+.alert-jpl .alert-header .alert-emoji {
+    font-size: 15px;
+    vertical-align: -1px;
 }
 
 .alert-item .alert-body .caught-train {
