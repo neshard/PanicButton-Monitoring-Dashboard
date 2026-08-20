@@ -459,6 +459,9 @@ function updateTrain(data) {
         marker = L.marker([lat, lon], { icon: createTrainIcon(c.body, c.ring) }).addTo(map);
         marker.options._ring = c.ring;
         marker.bindPopup(createTrainPopup(data, ledStatus[vtdid] || {}, nearestJPL));
+        marker.on('click', () => {
+            map.setView(marker.getLatLng(), 14);
+        });
         // The distance badge and the full status popup both sit above the icon, so only
         // one can be shown at a time: hide the badge while the popup is open, bring it
         // back once the popup closes (bound once here, not on every position update).
