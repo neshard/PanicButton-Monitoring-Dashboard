@@ -385,34 +385,33 @@ tbody tr:hover {
     pointer-events: none;
 }
 
-/* Train & JPL popup "label: value" rows — CSS table so the label column (and thus the
-   ':' separator) auto-sizes to the widest label and lines up across rows, without
-   relying on manual space-padding. */
+/* Train & JPL popup "label: value" rows — CSS grid so the label column auto-sizes to
+   the widest label, and the ':' (via flex space-between inside each label cell) lines
+   up at that column's right edge on every row, while the label text itself stays
+   flush-left — instead of relying on manual space-padding or right-aligning the whole
+   label (which shifts short labels' text, not just the ':'). */
 .popup-info {
-    display: table;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 6px;
+    row-gap: 1px;
     margin-top: 4px;
-    border-spacing: 0;
 }
 .popup-info-row {
-    display: table-row;
+    display: contents;
 }
 .popup-info-label,
 .popup-info-value {
-    display: table-cell;
-    padding: 1px 0;
     line-height: 1.4;
 }
 .popup-info-label {
+    display: flex;
+    justify-content: space-between;
     white-space: nowrap;
-    padding-right: 6px;
-    text-align: right;
     color: #555;
 }
 .popup-info-label::after {
     content: ":";
-}
-.popup-info-value {
-    width: 100%;
 }
 
 /* Train popup: highlight the "distance to active JPL" line as its own block so it
