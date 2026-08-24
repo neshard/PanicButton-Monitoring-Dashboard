@@ -405,6 +405,7 @@ tbody tr:hover {
 .popup-info-label {
     white-space: nowrap;
     padding-right: 6px;
+    text-align: right;
     color: #555;
 }
 .popup-info-label::after {
