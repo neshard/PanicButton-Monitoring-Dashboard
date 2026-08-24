@@ -1067,6 +1067,11 @@ function checkLowBattery(jplId) {
         updateJPLMarkerColor(jplId); // 🚀 Paint Blue when recovered
     }
 }
+// Health-related notification cards (low battery, inactive signal) auto-dismiss after
+// this long — the underlying condition keeps showing on the JPL marker/table/popup via
+// healthStatus regardless, this only limits how long the toast itself stays on screen.
+const HEALTH_ALERT_AUTO_DISMISS_MS = 10 * 1000;
+
 function addLowBatteryAlert(jplId, health) {
     const jpl = jplData[jplId] || {};
     removeAlertCardsBy('data-health-jpl', jplId);
@@ -1099,6 +1104,7 @@ function addLowBatteryAlert(jplId, health) {
     });
 
     document.getElementById('alert-stack').appendChild(alertItem);
+    setTimeout(() => alertItem.remove(), HEALTH_ALERT_AUTO_DISMISS_MS);
 }
 
 // Runs periodically (not just on message arrival) since staleness is about the ABSENCE
@@ -1156,6 +1162,7 @@ function addInactivePanicButtonAlert(jplId, health) {
     });
 
     document.getElementById('alert-stack').appendChild(alertItem);
+    setTimeout(() => alertItem.remove(), HEALTH_ALERT_AUTO_DISMISS_MS);
 }
 
 
