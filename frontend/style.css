@@ -385,6 +385,35 @@ tbody tr:hover {
     pointer-events: none;
 }
 
+/* Train & JPL popup "label: value" rows — CSS table so the label column (and thus the
+   ':' separator) auto-sizes to the widest label and lines up across rows, without
+   relying on manual space-padding. */
+.popup-info {
+    display: table;
+    margin-top: 4px;
+    border-spacing: 0;
+}
+.popup-info-row {
+    display: table-row;
+}
+.popup-info-label,
+.popup-info-value {
+    display: table-cell;
+    padding: 1px 0;
+    line-height: 1.4;
+}
+.popup-info-label {
+    white-space: nowrap;
+    padding-right: 6px;
+    color: #555;
+}
+.popup-info-label::after {
+    content: ":";
+}
+.popup-info-value {
+    width: 100%;
+}
+
 /* Train popup: highlight the "distance to active JPL" line as its own block so it
    doesn't blend into the rest of the plain-text popup (Leaflet popups are light-themed). */
 .train-popup-jpl {

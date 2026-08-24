@@ -26,6 +26,18 @@ if (topBarTitle) {
     });
 }
 
+// ---- Popup "label: value" row layout (used by train & JPL popups) ----
+// Rendered as a CSS table so the ':' column lines up across rows regardless of
+// label length, instead of relying on manual space-padding (which HTML collapses).
+function popupInfoRow(label, value) {
+    if (value === null || value === undefined || value === '') return '';
+    return `<div class="popup-info-row"><span class="popup-info-label">${label}</span><span class="popup-info-value">${value}</span></div>`;
+}
+function popupInfoTable(rows) {
+    const html = rows.filter(Boolean).join('');
+    return html ? `<div class="popup-info">${html}</div>` : '';
+}
+
 // ---- Map Setup ----
 const map = L.map('map', {
     center: [-2.5, 118.0],
@@ -545,7 +557,12 @@ function createTrainPopup(data, led, nearestJPL) {
     const jplBlock = nearestJPL
         ? `<div class="train-popup-jpl"><b>⚠️ Peringatan: JPL Aktif ${nearestJPL.jplId}, jarak ${nearestJPL.distanceKm.toFixed(2)} km.</b></div>`
         : '';
-    return `<b>${data.L_VTDID}</b><br>Speed: ${data.L_SPEED} km/h<br>Location: ${data.L_LOCATION || 'N/A'}<br>Status: ${info.status}${jplBlock}`;
+    const table = popupInfoTable([
+        popupInfoRow('Speed', `${data.L_SPEED} km/h`),
+        popupInfoRow('Location', data.L_LOCATION || 'N/A'),
+        popupInfoRow('Status', info.status),
+    ]);
+    return `<b>${data.L_VTDID}</b>${table}${jplBlock}`;
 }
 
 // ---- Distance-to-active-JPL helper (within 5km) ----
@@ -614,25 +631,28 @@ function updateJPLPopupContent(jplId) {
         ? 'Bahaya'
         : (health && health.status ? String(health.status) : 'Aman');
 
-    const infoLines = [
+    const header = [
         `<b>${jplId}</b>`,
         jpl.descript ? `${jpl.descript}` : '',
-        jpl.ba ? `BA: ${jpl.ba}` : '',
-        `Status: ${statusText}`,
+    ].filter(Boolean).join('<br>');
+
+    const rows = [
+        popupInfoRow('BA', jpl.ba),
+        popupInfoRow('Status', statusText),
     ];
 
     if (health) {
         const power = health.powerType || health.power || 'N/A';
-        if (power && power !== 'N/A') infoLines.push(`Power: <b>${power}</b>`);
-        if (health.batteryVoltage != null) infoLines.push(`Battery Voltage: ${health.batteryVoltage} V`);
-        if (health.batteryPersentage != null) infoLines.push(`Battery: <b>${health.batteryPersentage}%</b>`);
-        if (health.batteryCharging != null) infoLines.push(`Battery Charging: <b>${parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak'}</b>`);
-        if (health.gsmNumber) infoLines.push(`GSM: ${health.gsmNumber}`);
-        if (health.signalStrength) infoLines.push(`Signal: ${health.signalStrength}`);
-        if (health.datetime) infoLines.push(`Last Update: ${health.datetime}`);
+        if (power && power !== 'N/A') rows.push(popupInfoRow('Power', `<b>${power}</b>`));
+        if (health.batteryVoltage != null) rows.push(popupInfoRow('Battery Voltage', `${health.batteryVoltage} V`));
+        if (health.batteryPersentage != null) rows.push(popupInfoRow('Battery', `<b>${health.batteryPersentage}%</b>`));
+        if (health.batteryCharging != null) rows.push(popupInfoRow('Battery Charging', `<b>${parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak'}</b>`));
+        if (health.gsmNumber) rows.push(popupInfoRow('GSM', health.gsmNumber));
+        if (health.signalStrength) rows.push(popupInfoRow('Signal', health.signalStrength));
+        if (health.datetime) rows.push(popupInfoRow('Last Update', health.datetime));
     }
 
-    marker.setPopupContent(infoLines.filter(Boolean).join('<br>'));
+    marker.setPopupContent(`${header}${popupInfoTable(rows)}`);
 }
 
 function syncJPLHealthPopupState() {
@@ -649,7 +669,12 @@ function addJPLMarker(jpl) {
     const marker = L.circleMarker([lat, lon], {
         renderer: jplRenderer, radius: 6, fillColor: '#0a84ff', color: '#fff', weight: 2, opacity: 1, fillOpacity: 0.8
     }).addTo(map);
-    marker.bindPopup(`<b>${id}</b><br>${jpl.descript || ''}<br>BA: ${jpl.ba || ''}<br>Status: <span id="status-${id}">${formatStatusLabel('release')}</span>`);
+    const initialHeader = [`<b>${id}</b>`, jpl.descript || ''].filter(Boolean).join('<br>');
+    const initialTable = popupInfoTable([
+        popupInfoRow('BA', jpl.ba),
+        popupInfoRow('Status', formatStatusLabel('release')),
+    ]);
+    marker.bindPopup(`${initialHeader}${initialTable}`, { autoPan: false });
     marker.on('click', () => {
         map.setView([lat, lon], 14);
         updateJPLPopupContent(id);
@@ -815,19 +840,17 @@ function setJPLState(jplId, state) {
     if (!healthStatus[jplId] && !activeAlerts.has(jplId)) {
         stopPulse(jplId); // Will automatically set to grey via getJPLFillColor
         updateRadiusCircles(jplId, 'release');
-        const popup = marker.getPopup();
-        if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${formatStatusLabel('release')}`));
+        updateJPLPopupContent(jplId);
         return;
     }
-    if (state === 'pbpressed') { 
-        marker.setStyle({ fillColor: '#ff453a' }); 
-        startPulse(jplId); 
-    } else { 
+    if (state === 'pbpressed') {
+        marker.setStyle({ fillColor: '#ff453a' });
+        startPulse(jplId);
+    } else {
         stopPulse(jplId); // Will automatically set to blue, yellow, or orange
     }
     updateRadiusCircles(jplId, state);
-    const popup = marker.getPopup();
-    if (popup) popup.setContent(popup.getContent().replace(/Status: .*/, `Status: ${formatStatusLabel(state)}`));
+    updateJPLPopupContent(jplId);
 }
 
 // ---- Zoom to show currently-active JPL(s) — fits all of them when 2+ are active at once ----
