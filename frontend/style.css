@@ -514,6 +514,15 @@ tbody tr:hover {
     font-size: 14px;
 }
 
+/* Alert cards are dark-themed (unlike Leaflet's light popup chrome), so the
+   label column needs a lighter muted tone to stay readable. */
+.alert-item .popup-info-label {
+    color: var(--text-muted);
+}
+.alert-item .popup-info {
+    margin-top: 2px;
+}
+
 .alert-item .alert-body .caught-train {
     display: inline-block;
     background: #2a2a2a;

@@ -937,8 +937,10 @@ function addJPLPanicAlert(alertData) {
             <button class="alert-close" data-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">
-            <div><strong>Status:</strong> ${formatStatusLabel(event.eventType || 'pbpressed')}</div>
-            <div><strong>Time:</strong> ${event.datetime || new Date().toLocaleTimeString()}</div>
+            ${popupInfoTable([
+                popupInfoRow('Status', formatStatusLabel(event.eventType || 'pbpressed')),
+                popupInfoRow('Time', event.datetime || new Date().toLocaleTimeString()),
+            ])}
             <div>${jpl ? jpl.descript : ''}</div>
         </div>`;
 
@@ -1009,8 +1011,10 @@ function addTrainLEDAlert(led) {
                     ${statusText}
                 </span>
             </div>
-            <div><strong>Speed:</strong> ${train.L_SPEED || '0'} km/h</div>
-            <div><strong>Location:</strong> ${train.L_LOCATION || [train.L_KECAMATAN, train.L_KABUPATEN].filter(Boolean).join(', ') || 'N/A'}</div>
+            ${popupInfoTable([
+                popupInfoRow('Speed', `${train.L_SPEED || '0'} km/h`),
+                popupInfoRow('Location', train.L_LOCATION || [train.L_KECAMATAN, train.L_KABUPATEN].filter(Boolean).join(', ') || 'N/A'),
+            ])}
         </div>`;
 
     // Click popup to focus map on Train
@@ -1079,7 +1083,9 @@ function addLowBatteryAlert(jplId, health) {
             <button class="alert-close" data-health-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">
-            <div><strong>Battery:</strong> ${health.batteryPersentage}% (tidak di-cas)</div>
+            ${popupInfoTable([
+                popupInfoRow('Battery', `${health.batteryPersentage}% (tidak di-cas)`),
+            ])}
             <div>${jpl.descript || ''}</div>
         </div>`;
 
@@ -1135,7 +1141,9 @@ function addInactivePanicButtonAlert(jplId, health) {
         <div class="alert-body">
             <div>JPL tidak menerima sinyal healthStatus selama lebih dari 5 menit.</div>
             <div>${jpl.descript || ''}</div>
-            ${health && health.power ? `<div><strong>Power:</strong> ${health.power}</div>` : ''}
+            ${popupInfoTable([
+                health && health.power ? popupInfoRow('Power', health.power) : '',
+            ])}
         </div>`;
 
     alertItem.addEventListener('click', function(e) {
