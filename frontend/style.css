@@ -72,6 +72,13 @@ body {
     font-weight: 700;
     color: var(--text-primary);
     white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: opacity 0.2s, color 0.2s;
+}
+#top-bar-title:hover {
+    color: var(--accent-blue);
+    opacity: 0.9;
 }
 
 #backend-status {

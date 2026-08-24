@@ -18,6 +18,14 @@ function statusClassFor(label) {
     return STATUS_CLASS[label] || '';
 }
 
+// ---- Header Title Click: Reset Map View ----
+const topBarTitle = document.getElementById('top-bar-title');
+if (topBarTitle) {
+    topBarTitle.addEventListener('click', () => {
+        map.fitBounds(JAVA_BOUNDS, { padding: [20, 20] });
+    });
+}
+
 // ---- Map Setup ----
 const map = L.map('map', {
     center: [-2.5, 118.0],
