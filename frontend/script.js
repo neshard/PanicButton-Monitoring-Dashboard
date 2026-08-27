@@ -25,6 +25,7 @@ if (topBarTitle) {
         if (!sidebarContent.classList.contains('hidden')) {
             closeSidebarFn();
         }
+        map.closePopup();
         map.fitBounds(JAVA_BOUNDS, { padding: [20, 20] });
     });
 }
