@@ -18,6 +18,24 @@ function statusClassFor(label) {
     return STATUS_CLASS[label] || '';
 }
 
+// ---- Time Formatting (Indonesian format: DD/MM/YYYY HH:mm:ss) ----
+function formatDateTime(isoString) {
+    if (!isoString) return '-';
+    try {
+        const date = new Date(isoString);
+        if (isNaN(date.getTime())) return isoString;
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    } catch (e) {
+        return isoString;
+    }
+}
+
 // ---- Header Title Click: Reset Map View ----
 const topBarTitle = document.getElementById('top-bar-title');
 if (topBarTitle) {
@@ -69,6 +87,8 @@ let healthStatus = {}; // jplId -> latest {deviceId, jplId, batteryPersentage, b
 let lowBatteryAlerted = new Set(); // jplId currently showing a low-battery alert card
 let staleSignalAlerted = new Set(); // jplId currently showing a signal-loss alert card
 let jplPowerWarningState = {};
+let jplPowerWarningTimeouts = {};
+let previousPowerState = {}; // jplId -> previous power type (LINE/BATTERY)
 const HEALTH_STALE_MS = 5 * 60 * 1000; // 5 minutes
 
 function parseCharging(value) {
@@ -398,7 +418,7 @@ function handleWebSocketMessage(msg) {
         });
         renderJPLTable(true);
         checkHealthStaleness();
-        syncJPLHealthPopupState();
+        syncJPLHealthPopupState(true); // Pass true for initial load to show battery popups
         Object.keys(jplData).forEach(jplId => setJPLState(jplId, activeAlerts.has(jplId) ? 'pbpressed' : 'release'));
 
     } else if (msg.type === 'health_update') {
@@ -418,7 +438,7 @@ function handleWebSocketMessage(msg) {
                 updateJPLTableRow(h.jplId);
             }
             setJPLState(h.jplId, 'release');
-            updateJPLPowerWarningBadge(h.jplId);
+            updateJPLPowerWarningBadge(h.jplId, isFirstReport); // Pass isFirstReport for first health message
             updateJPLPopupContent(h.jplId);
             checkLowBattery(h.jplId);
             checkHealthStaleness();
@@ -649,15 +669,15 @@ function updateJPLPopupContent(jplId) {
         if (health.batteryCharging != null) rows.push(popupInfoRow('Battery Charging', `<b>${parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak'}</b>`));
         if (health.gsmNumber) rows.push(popupInfoRow('GSM', health.gsmNumber));
         if (health.signalStrength) rows.push(popupInfoRow('Signal', health.signalStrength));
-        if (health.datetime) rows.push(popupInfoRow('Last Update', health.datetime));
+        if (health.datetime) rows.push(popupInfoRow('Last Update', formatDateTime(health.datetime)));
     }
 
     marker.setPopupContent(`${header}${popupInfoTable(rows)}`);
 }
 
-function syncJPLHealthPopupState() {
+function syncJPLHealthPopupState(isFirstLoad = false) {
     Object.keys(jplData).forEach(jplId => updateJPLPopupContent(jplId));
-    Object.keys(healthStatus).forEach(jplId => updateJPLPowerWarningBadge(jplId));
+    Object.keys(healthStatus).forEach(jplId => updateJPLPowerWarningBadge(jplId, isFirstLoad));
 }
 
 function addJPLMarker(jpl) {
@@ -685,7 +705,7 @@ function addJPLMarker(jpl) {
     updateJPLPowerWarningBadge(id);
 }
 
-function updateJPLPowerWarningBadge(jplId) {
+function updateJPLPowerWarningBadge(jplId, isFirstLoad = false) {
     const marker = jplMarkers[jplId];
     if (!marker) return;
     const health = healthStatus[jplId];
@@ -697,8 +717,20 @@ function updateJPLPowerWarningBadge(jplId) {
     const visualHeight = 12 * scale; 
     const offset = L.point(0, -(visualHeight + 2));
 
+    // Track power state changes
+    const prevPower = previousPowerState[jplId];
+    const isFirstLoadState = prevPower === undefined;
+    const isLineToBattery = prevPower === 'LINE' && power === 'BATTERY';
+    
+    // Check low battery condition: BATTERY, below 20%, not charging
+    const pct = health ? (health.batteryPercentage || health.batteryPersentage) : null;
+    const charging = health ? parseCharging(health.batteryCharging) : false;
+    const isLowBattery = pct != null && parseFloat(pct) < 20 && !charging && power === 'BATTERY';
+
     if (isBackup) {
-        if (!jplPowerWarningState[jplId]) {
+        // Show popup on: LINE → BATTERY change, initial load, or low battery condition
+        // isFirstLoadState handles the case where this is the first health message ever for this JPL
+        if (!jplPowerWarningState[jplId] && (isLineToBattery || isFirstLoad || isFirstLoadState || isLowBattery)) {
             marker.bindTooltip('⚠️ Backup power: BATTERY', {
                 permanent: true,
                 direction: 'top',
@@ -706,14 +738,34 @@ function updateJPLPowerWarningBadge(jplId) {
                 className: 'jpl-power-tooltip'
             });
             jplPowerWarningState[jplId] = true;
-        } else {
+
+            clearTimeout(jplPowerWarningTimeouts[jplId]);
+            jplPowerWarningTimeouts[jplId] = setTimeout(() => {
+                if (jplPowerWarningState[jplId]) {
+                    marker.unbindTooltip();
+                    jplPowerWarningState[jplId] = false;
+                }
+                delete jplPowerWarningTimeouts[jplId];
+            }, HEALTH_ALERT_AUTO_DISMISS_MS);
+        } else if (jplPowerWarningState[jplId]) {
             marker.setTooltipContent('⚠️ Backup power: BATTERY');
             marker.getTooltip().options.offset = offset;
             marker.getTooltip().update();
         }
-    } else if (jplPowerWarningState[jplId]) {
-        marker.unbindTooltip();
-        jplPowerWarningState[jplId] = false;
+    } else {
+        // Hide popup if not on BATTERY
+        if (jplPowerWarningState[jplId]) {
+            marker.unbindTooltip();
+            jplPowerWarningState[jplId] = false;
+            clearTimeout(jplPowerWarningTimeouts[jplId]);
+            delete jplPowerWarningTimeouts[jplId];
+        }
+    }
+
+    // Update previous power state only if it was undefined (first time) or if power actually changed
+    // This preserves isFirstLoadState for the first real health message after initial load
+    if (prevPower === undefined || prevPower !== power) {
+        previousPowerState[jplId] = power;
     }
 }
 
@@ -829,8 +881,8 @@ function updateRadiusCircles(jplId, state) {
     const jpl = jplData[jplId]; if (!jpl) return;
     const lat = jpl.latitude, lon = jpl.longitude;
     if (lat == null || lon == null) return;
-    const red = L.circle([lat, lon], { renderer: jplRenderer, radius: 1100, color: '#ff453a', fillColor: '#ff453a', fillOpacity: 0.15, weight: 2, opacity: 0.6 }).addTo(map);
-    const yellow = L.circle([lat, lon], { renderer: jplRenderer, radius: 3000, color: '#ff9f0a', fillColor: '#ff9f0a', fillOpacity: 0.1, weight: 2, opacity: 0.5 }).addTo(map);
+    const red = L.circle([lat, lon], { renderer: jplRenderer, radius: 1100, color: '#ff453a', fillColor: '#ff453a', fillOpacity: 0.15, weight: 2, opacity: 0.6, interactive: false }).addTo(map);
+    const yellow = L.circle([lat, lon], { renderer: jplRenderer, radius: 3000, color: '#ff9f0a', fillColor: '#ff9f0a', fillOpacity: 0.1, weight: 2, opacity: 0.5, interactive: false }).addTo(map);
     jplRadiusLayers[jplId] = [red, yellow];
     startRadiusPulse(jplId);
 }
@@ -939,7 +991,7 @@ function addJPLPanicAlert(alertData) {
         <div class="alert-body">
             ${popupInfoTable([
                 popupInfoRow('Status', formatStatusLabel(event.eventType || 'pbpressed')),
-                popupInfoRow('Time', event.datetime || new Date().toLocaleTimeString()),
+                popupInfoRow('Time', formatDateTime(event.datetime) || new Date().toLocaleTimeString()),
             ])}
             <div>${jpl ? jpl.descript : ''}</div>
         </div>`;
@@ -1181,11 +1233,31 @@ function renderJPLTable(reset = false) {
     if (reset) {
         jplVisibleCount = 0;
         sortedJPLIDs = Object.keys(jplData).sort((a, b) => {
-            // Active PB alerts first, then JPLs that have reported battery/health status,
-            // then everything else (no health data yet) last.
+            // Primary sort: Active PB alerts first, then JPLs with health status, then no health data
             const rankA = activeAlerts.has(a) ? 0 : (healthStatus[a] ? 1 : 2);
             const rankB = activeAlerts.has(b) ? 0 : (healthStatus[b] ? 1 : 2);
-            return rankA - rankB;
+            if (rankA !== rankB) return rankA - rankB;
+
+            // Secondary sort: Power type (Battery/Baterai before Line)
+            const powerA = healthStatus[a] ? String(healthStatus[a].powerType || healthStatus[a].power || '').toUpperCase() : '';
+            const powerB = healthStatus[b] ? String(healthStatus[b].powerType || healthStatus[b].power || '').toUpperCase() : '';
+            const powerRankA = powerA === 'BATTERY' ? 0 : (powerA === 'LINE' ? 1 : 2);
+            const powerRankB = powerB === 'BATTERY' ? 0 : (powerB === 'LINE' ? 1 : 2);
+            if (powerRankA !== powerRankB) return powerRankA - powerRankB;
+
+            // Tertiary sort: Battery percentage (low battery < 20% before higher battery)
+            const battA = healthStatus[a] ? (healthStatus[a].batteryPercentage || healthStatus[a].batteryPersentage) : null;
+            const battB = healthStatus[b] ? (healthStatus[b].batteryPercentage || healthStatus[b].batteryPersentage) : null;
+            const isLowA = battA != null && parseFloat(battA) < 20;
+            const isLowB = battB != null && parseFloat(battB) < 20;
+            if (isLowA !== isLowB) return isLowA ? -1 : 1;
+
+            // Final sort: Battery percentage ascending (lower battery first)
+            if (battA != null && battB != null) return parseFloat(battA) - parseFloat(battB);
+            if (battA != null) return -1;
+            if (battB != null) return 1;
+
+            return 0;
         });
         tbody.innerHTML = '';
         jplRowElements = {};
@@ -1207,7 +1279,7 @@ function renderJPLTable(reset = false) {
         const voltage = health?.batteryVoltage != null ? health.batteryVoltage + ' V' : '-';
         const charging = health?.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : '-';
         const signal = health?.signalStrength || '-';
-        const lastUpdate = health?.datetime || '-';
+        const lastUpdate = formatDateTime(health?.datetime) || '-';
         return `
             <tr class="data-row ${statusClass}" data-jpl="${id}">
                 <td class="${statusClass}">${status}</td>
@@ -1244,7 +1316,7 @@ function updateJPLTableRow(jplId) {
     cells[6].textContent = health?.batteryVoltage != null ? health.batteryVoltage + ' V' : '-';
     cells[7].textContent = health?.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : '-';
     cells[8].textContent = health?.signalStrength || '-';
-    cells[9].textContent = health?.datetime || '-';
+    cells[9].textContent = formatDateTime(health?.datetime) || '-';
 }
 
 // --- Train Table ---
@@ -1285,7 +1357,7 @@ function renderTrainTable(reset = false) {
                 <td>${train.L_KERETA || ''}</td>
                 <td>${train.L_SPEED || '0'}</td>
                 <td>${location || train.L_LOCATION || ''}</td>
-                <td>${(train.L_RECEIVED_DATE || '').slice(0, 16)}</td>
+                <td>${formatDateTime(train.L_RECEIVED_DATE)}</td>
                 <td>${jplDistance}</td>
             </tr>`;
     }).join('');
@@ -1347,11 +1419,21 @@ function fetchLogs(reset = true) {
     logsLoading = true;
     showLoadingIndicator(tbody, 17);
 
-    fetch(`${API_BASE}/logs?limit=50&offset=${logOffset}`)
-        .then(res => res.json())
+    // Add timeout to handle slow database queries
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+    fetch(`${API_BASE}/logs?limit=50&offset=${logOffset}`, { signal: controller.signal })
+        .then(res => {
+            clearTimeout(timeoutId);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
         .then(data => {
             hideLoadingIndicator(tbody);
+            console.log('Logs API response:', data);
             const logs = data.logs || [];
+            console.log('Logs array length:', logs.length);
             logOffset += logs.length;
             if (logs.length < 50) logsExhausted = true;
             const html = logs.map(log => `
@@ -1376,7 +1458,16 @@ function fetchLogs(reset = true) {
                 </tr>`).join('');
             tbody.insertAdjacentHTML('beforeend', html);
         })
-        .catch(err => { hideLoadingIndicator(tbody); console.warn('Failed to fetch logs:', err); })
+        .catch(err => {
+            hideLoadingIndicator(tbody);
+            if (err.name === 'AbortError') {
+                console.warn('Logs fetch timed out - database query too slow');
+                tbody.insertAdjacentHTML('beforeend', '<tr><td colspan="17" style="text-align:center;padding:20px;color:#ff453a;">⚠️ Database query timeout. Please try again later.</td></tr>');
+            } else {
+                console.warn('Failed to fetch logs:', err);
+                tbody.insertAdjacentHTML('beforeend', '<tr><td colspan="17" style="text-align:center;padding:20px;color:#ff453a;">⚠️ Failed to load logs. Please try again.</td></tr>');
+            }
+        })
         .finally(() => { logsLoading = false; });
 }
 

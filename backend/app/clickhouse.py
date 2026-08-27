@@ -15,7 +15,8 @@ class ClickHouseDB:
             port=9000,   # native TCP
             user=Config.CH_USERNAME,
             password=Config.CH_PASSWORD,
-            database=Config.CH_DATABASE
+            database=Config.CH_DATABASE,
+            settings={'max_execution_time': 10}  # 10 second query timeout
         )
         # clickhouse_driver.Client wraps a single TCP connection and is not
         # thread-safe, and _execute() can be called concurrently from multiple
@@ -81,8 +82,8 @@ class ClickHouseDB:
     def fetch_logs(self, jpl_id: Optional[str] = None, limit: int = 50, offset: int = 0):
         """Fetch paginated panic event logs, safely escaped against SQL injection.
 
-        Scoped to today and non-release events only — same "Alert Hari Ini" definition
-        as count_alerts_today(), so the Event Log tab lists exactly what that stat counts.
+        Uses last 7 days instead of today() to avoid timezone mismatch issues.
+        Shows all event types (including releases) for complete history.
         """
         query = (
             f"SELECT id, event_time, event_type, trigger_type, device_id, "
@@ -90,15 +91,15 @@ class ClickHouseDB:
             f"previous_alert, alert_changed, release_count, loco_speed, loco_location "
             f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE}"
         )
-        release_list = ", ".join(self._RELEASE_EVENT_TYPES)
-        conditions = [
-            "toDate(event_time) = today()",
-            f"lower(event_type) NOT IN ({release_list})"
-        ]
+        # Use last 7 days to avoid timezone mismatch with today()
+        conditions = ["event_time >= now() - INTERVAL 7 DAY"]
+        
         if jpl_id:
             conditions.append(f"funcloc = {self._escape_string(jpl_id)}")
+        
         query += " WHERE " + " AND ".join(conditions)
         query += f" ORDER BY event_time DESC LIMIT {int(limit)} OFFSET {int(offset)}"
+        logger.info(f"Executing logs query: {query}")
         return self._execute(query)
 
     # event_type values seen in the wild aren't a strict PBPRESSED/PBRELEASED binary —
