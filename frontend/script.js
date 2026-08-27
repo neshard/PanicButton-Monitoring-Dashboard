@@ -22,6 +22,9 @@ function statusClassFor(label) {
 const topBarTitle = document.getElementById('top-bar-title');
 if (topBarTitle) {
     topBarTitle.addEventListener('click', () => {
+        if (!sidebarContent.classList.contains('hidden')) {
+            closeSidebarFn();
+        }
         map.fitBounds(JAVA_BOUNDS, { padding: [20, 20] });
     });
 }
