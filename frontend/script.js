@@ -1568,7 +1568,13 @@ function fetchWeeklySummary() {
         .finally(() => { weeklySummaryLoading = false; });
 
     if (rangeEl) {
-        const fmt = s => new Date(s).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+        // Construct the Date from local y/m/d parts (not `new Date(str)`, which parses
+        // 'YYYY-MM-DD' as UTC midnight — for viewers west of UTC that then formats one
+        // day earlier than the date actually sent to the backend).
+        const fmt = s => {
+            const [y, m, d] = s.split('-').map(Number);
+            return new Date(y, m - 1, d).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+        };
         rangeEl.textContent = start && end ? `${fmt(start)} – ${fmt(end)}` : '';
     }
 }

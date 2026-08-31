@@ -421,6 +421,8 @@ async def get_weekly_jpl_activity(start: str = None, end: str = None):
     'YYYY-MM-DD'), or the last 7 days if neither is given. The frontend maps
     funcloc -> ba -> DAOP itself (via its own jplData + BA_DAOP_MAP) to build the
     JPL-Aktif-per-DAOP summary tab, so this just returns the raw per-JPL counts."""
+    if bool(start) != bool(end):
+        raise HTTPException(status_code=400, detail="start and end must both be provided together")
     if (start and not _DATE_RE.match(start)) or (end and not _DATE_RE.match(end)):
         raise HTTPException(status_code=400, detail="start/end must be in YYYY-MM-DD format")
     if start and end and start > end:
