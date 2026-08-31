@@ -332,6 +332,17 @@ body {
     padding: 5px 8px;
     font-size: 13px;
     font-family: inherit;
+    /* Tells the browser to render this control's native UI (including the select's
+       open dropdown popup) with a dark palette by default, so the option list isn't
+       light text on the browser's default white popup background. */
+    color-scheme: dark;
+}
+
+/* Belt-and-suspenders for browsers that don't fully theme the popup via
+   color-scheme alone — style the options directly too. */
+.table-toolbar select option {
+    background: var(--panel-bg-alt);
+    color: var(--text-primary);
 }
 
 .table-toolbar select:focus,
