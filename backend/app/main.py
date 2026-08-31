@@ -74,6 +74,11 @@ panic_alerts: List[dict] = []
 pending_train_updates: Dict[str, dict] = {}  # vtdid -> latest payload (coalesced)
 health_status: Dict[str, dict] = {}  # jplId -> latest battery/power payload
 
+# Deduplication state - store last seen content to avoid duplicate broadcasts
+last_panic_state: Dict[str, dict] = {}  # jplId -> {deviceId, funcloc, eventType}
+last_health_state: Dict[str, dict] = {}  # jplId -> {powerType, isWarning}
+last_led_state: Dict[str, dict] = {}  # vtdid -> last LED content
+
 
 class ConnectionManager:
     def __init__(self):
@@ -204,8 +209,22 @@ async def lifespan(app: FastAPI):
             # panic events directly to the DB, so we only track in-memory state and
             # broadcast to connected dashboards.
             event = payload
+            # Map funcloc to jplId to match MQTT payload structure
+            if not event.get('jplId') and event.get('funcloc'):
+                event['jplId'] = event['funcloc']
             jpl_id = event.get('jplId')
             event_type = str(event.get('eventType', '')).upper()
+
+            # Deduplication: only check deviceId, funcloc, and eventType
+            panic_key = {
+                'deviceId': event.get('deviceId'),
+                'funcloc': event.get('funcloc'),
+                'eventType': event_type
+            }
+            if jpl_id and last_panic_state.get(jpl_id) == panic_key:
+                return  # Skip duplicate message
+            if jpl_id:
+                last_panic_state[jpl_id] = panic_key
 
             # If event is a release/clear event, remove active alert from memory list.
             # The live device feed isn't a strict PBPRESSED/PBRELEASED binary — it records
@@ -244,6 +263,29 @@ async def lifespan(app: FastAPI):
             payload = normalize_health_payload(payload)
             jpl_id = payload.get('jplId') or payload.get('funcloc')
             if jpl_id:
+                # Deduplication: check power source and battery percentage (rounded to nearest 5% to avoid minor fluctuations)
+                power_type = str(payload.get('powerType') or payload.get('power') or '').upper()
+                pct = payload.get('batteryPercentage') or payload.get('batteryPersentage')
+                charging = payload.get('batteryCharging')
+                
+                # Round battery percentage to nearest 5% to avoid duplicate broadcasts from minor fluctuations
+                rounded_pct = None
+                if pct is not None:
+                    try:
+                        rounded_pct = round(float(pct) / 5) * 5
+                    except (ValueError, TypeError):
+                        rounded_pct = None
+                
+                health_key = {
+                    'powerType': power_type,
+                    'batteryPercentage': rounded_pct,
+                    'batteryCharging': charging
+                }
+                
+                if last_health_state.get(jpl_id) == health_key:
+                    return  # Skip duplicate message
+                last_health_state[jpl_id] = health_key
+
                 health_status[jpl_id] = payload
                 asyncio.run_coroutine_threadsafe(
                     manager.broadcast(json.dumps({"type": "health_update", "data": payload})),
@@ -253,6 +295,16 @@ async def lifespan(app: FastAPI):
         elif 'ledMerah' in payload:
             vtdid = payload.get('vtdid')
             if vtdid:
+                # Deduplication: compare LED state fields
+                led_key = {
+                    'ledMerah': payload.get('ledMerah'),
+                    'ledKuning': payload.get('ledKuning'),
+                    'buzzer': payload.get('buzzer')
+                }
+                if last_led_state.get(vtdid) == led_key:
+                    return  # Skip duplicate message
+                last_led_state[vtdid] = led_key
+
                 led_status[vtdid] = payload
                 asyncio.run_coroutine_threadsafe(
                     manager.broadcast(json.dumps({
@@ -311,6 +363,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def get_logs(jplId: str = None, limit: int = 50, offset: int = 0):
     # Server-side pagination + non-blocking DB call, parameterized to avoid SQL injection
     rows = await asyncio.to_thread(db.fetch_logs, jplId, limit, offset)
+    logger.info(f"Logs query returned {len(rows)} rows for jplId={jplId}, limit={limit}, offset={offset}")
 
     logs = []
     for row in rows:
@@ -333,6 +386,7 @@ async def get_logs(jplId: str = None, limit: int = 50, offset: int = 0):
             "loco_speed": row[15],
             "loco_location": row[16]
         })
+    logger.info(f"Returning {len(logs)} logs to frontend")
     return {"logs": logs}
 
 

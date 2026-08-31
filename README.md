@@ -56,25 +56,19 @@ railway-panic-monitor/
 
 ## Setup Instructions
 
-### 1. Clone the repository
-```bash
-git clone <your-repo-url>
-cd dashboard_panicButton
-```
-
-### 2. Configure environment variables
-Copy `.env.example` to `backend/.env` and fill in your actual credentials.
+### 1. Environment variables 
+Copy `.env.example` to `backend/.env` and fill in your actual credentials. if not done yet
 
 For testing with the dummy local broker, set `LOCOTRACK_HOST` to `127.0.0.1` and `LOCOTRACK_PORT` to `1884`.
 
-### 3. Start the dummy MQTT broker (optional)
+### 2. Start the dummy MQTT broker (optional)
 If you don't have a real broker available, start the dummy Mosquitto broker via Docker:
 ```bash
 docker-compose up -d
 ```
 *This exposes port 1884 on your host machine.*
 
-### 4. Install backend dependencies
+### 3. Install backend dependencies
 ```bash
 cd backend
 python -m venv venv
@@ -82,21 +76,7 @@ source venv/bin/activate   # or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
 ```
 
-### 5. Generate Offline Railway Map Data (Required for Map, if static is not available yet)
-To render the neon green railway lines without lagging the browser, we use a static GeoJSON file.
-1. Go to [Overpass Turbo](https://overpass-turbo.eu/).
-2. Paste the following query to extract all Indonesian railways (Heavy rail, MRT, LRT, KRL, Trams):
-   ```overpass
-   [out:json][timeout:900];
-   (
-     way["railway"~"^(rail|light_rail|subway|tram|monorail|funicular|narrow_gauge)$"](-11.0,95.0,6.0,141.0);
-   );
-   out body geom;
-   ```
-3. Click **Export** -> **GeoJSON**.
-4. Save the file as `railway.geojson` and place it inside the `frontend/` folder (or `static/` folder, ensuring the path in `script.js` matches).
-
-### 6. Run the backend
+### 4. Run the backend
 ```bash
 cd backend
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -108,14 +88,14 @@ The backend will:
 - Serve REST endpoints at `http://localhost:8000/api/...`.
 - **Serve the Frontend UI directly at `http://localhost:8000`.**
 
-### 7. Access the Dashboard
+### 5. Access the Dashboard
 Simply open your web browser and navigate to:
 ```text
 http://localhost:8000
 ```
 *No separate frontend server (like Live Server or `python -m http.server`) is required. FastAPI handles serving the HTML, CSS, JS, and GeoJSON files automatically.*
 
-### 8. (Optional) Run the dummy simulator
+### 6. (Optional) Run the dummy simulator
 If you want to generate fake train data, panic events, and LED updates to test the WebSocket streaming:
 ```bash
 cd simulator
