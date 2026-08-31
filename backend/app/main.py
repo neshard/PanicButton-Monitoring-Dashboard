@@ -1,15 +1,19 @@
 import os
+import re
 import math
+from io import BytesIO
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 import asyncio
 import json
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from typing import List, Dict, Optional
 from datetime import datetime
+from openpyxl import Workbook
 from .clickhouse import ClickHouseDB
 from .mqtt_client import MQTTClientManager
 from .models import JPLMaster, TrainLocation, LEDStatus, PanicEvent, HealthStatus
@@ -406,6 +410,81 @@ async def get_today_stats():
         logger.error(f"Failed to fetch today's stats: {e}")
         alerts_today, jpl_active_today = 0, 0
     return {"alerts_today": alerts_today, "jpl_active_today": jpl_active_today}
+
+
+@app.get("/api/stats/weekly-jpl-activity")
+async def get_weekly_jpl_activity():
+    """Per-funcloc event counts over the last 7 days. The frontend maps funcloc -> ba
+    -> DAOP itself (via its own jplData + BA_DAOP_MAP) to build the JPL-Aktif-per-DAOP
+    summary tab, so this just returns the raw per-JPL counts."""
+    try:
+        rows = await asyncio.to_thread(db.fetch_weekly_jpl_activity)
+    except Exception as e:
+        logger.error(f"Failed to fetch weekly JPL activity: {e}")
+        rows = []
+    items = [
+        {
+            "funcloc": row[0],
+            "event_count": row[1],
+            "pressed_count": row[2],
+            "last_event": row[3].isoformat() if row[3] else None
+        }
+        for row in rows
+    ]
+    return {"items": items}
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+LOG_EXPORT_HEADERS = [
+    "ID", "Waktu", "Tipe", "Trigger", "Device", "Funcloc", "JPL Lat", "JPL Lon",
+    "VTDID", "Loco Lat", "Loco Lon", "Jarak (m)", "Alert Sebelumnya", "Alert Berubah",
+    "Jumlah Release", "Kecepatan", "Lokasi"
+]
+
+
+def build_logs_workbook(rows) -> BytesIO:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Event Log"
+    ws.append(LOG_EXPORT_HEADERS)
+    for row in rows:
+        event_time = row[1].strftime("%Y-%m-%d %H:%M:%S") if row[1] else ""
+        ws.append([
+            str(row[0]) if row[0] else "", event_time, row[2], row[3], row[4], row[5],
+            row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13],
+            row[14], row[15], row[16]
+        ])
+    for col_cells in ws.columns:
+        max_len = max((len(str(c.value)) if c.value is not None else 0) for c in col_cells)
+        ws.column_dimensions[col_cells[0].column_letter].width = min(max(max_len + 2, 10), 40)
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+@app.get("/api/logs/export")
+async def export_logs(start: str, end: str, jplId: str = None):
+    if not _DATE_RE.match(start) or not _DATE_RE.match(end):
+        raise HTTPException(status_code=400, detail="start/end must be in YYYY-MM-DD format")
+    if start > end:
+        raise HTTPException(status_code=400, detail="start must not be after end")
+
+    try:
+        rows = await asyncio.to_thread(db.fetch_logs_range, start, end, jplId)
+    except Exception as e:
+        logger.error(f"Failed to fetch logs for export ({start}..{end}): {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch logs")
+
+    buffer = await asyncio.to_thread(build_logs_workbook, rows)
+    filename = f"event_log_{start}_to_{end}.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 # ==========================================

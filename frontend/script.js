@@ -18,6 +18,17 @@ function statusClassFor(label) {
     return STATUS_CLASS[label] || '';
 }
 
+// ---- DAOP/DIVRE Grouping (derived from the JPL master's 'ba' business-area code) ----
+const BA_DAOP_MAP = {
+    'B010': 'DAOP 1', 'B020': 'DAOP 2', 'B030': 'DAOP 3', 'B040': 'DAOP 4', 'B050': 'DAOP 5',
+    'B060': 'DAOP 6', 'B070': 'DAOP 7', 'B080': 'DAOP 8', 'B090': 'DAOP 9',
+    'C010': 'DIVRE I', 'C020': 'DIVRE II', 'C031': 'DIVRE III', 'C032': 'DIVRE IV',
+};
+function getDAOPFromBA(ba) {
+    if (!ba) return '-';
+    return BA_DAOP_MAP[String(ba).trim().toUpperCase()] || '-';
+}
+
 // ---- Time Formatting (Indonesian format: DD/MM/YYYY HH:mm:ss) ----
 function formatDateTime(isoString) {
     if (!isoString) return '-';
@@ -194,7 +205,8 @@ const tabBtns = document.querySelectorAll('.tab-btn');
 const tabPanes = {
     jpl: document.getElementById('tab-jpl'),
     train: document.getElementById('tab-train'),
-    log: document.getElementById('tab-log')
+    log: document.getElementById('tab-log'),
+    summary: document.getElementById('tab-summary')
 };
 const tabContent = document.getElementById('tab-content');
 
@@ -209,6 +221,7 @@ function switchToTab(tabName) {
     if (currentView === 'jpl') renderJPLTable(true);
     else if (currentView === 'train') renderTrainTable(true);
     else if (currentView === 'log') fetchLogs(true);
+    else if (currentView === 'summary') fetchWeeklySummary();
 }
 
 tabBtns.forEach(btn => {
@@ -216,6 +229,19 @@ tabBtns.forEach(btn => {
         switchToTab(this.dataset.tab);
     });
 });
+
+// ---- JPL Table: DAOP Filter ----
+const jplDaopFilterEl = document.getElementById('jpl-daop-filter');
+if (jplDaopFilterEl) {
+    // Populate from BA_DAOP_MAP so the dropdown and the mapping stay single-sourced.
+    [...new Set(Object.values(BA_DAOP_MAP))].forEach(daop => {
+        const opt = document.createElement('option');
+        opt.value = daop;
+        opt.textContent = daop;
+        jplDaopFilterEl.appendChild(opt);
+    });
+    jplDaopFilterEl.addEventListener('change', () => renderJPLTable(true));
+}
 
 // ---- Infinite Scroll Listener ----
 tabContent.addEventListener('scroll', function() {
@@ -1236,7 +1262,10 @@ function renderJPLTable(reset = false) {
     const tbody = document.querySelector('#jpl-table tbody'); if (!tbody) return;
     if (reset) {
         jplVisibleCount = 0;
-        sortedJPLIDs = Object.keys(jplData).sort((a, b) => {
+        const daopFilter = jplDaopFilterEl ? jplDaopFilterEl.value : '';
+        sortedJPLIDs = Object.keys(jplData)
+            .filter(id => !daopFilter || getDAOPFromBA(jplData[id].ba) === daopFilter)
+            .sort((a, b) => {
             // Primary sort: Active PB alerts first, then JPLs with health status, then no health data
             const rankA = activeAlerts.has(a) ? 0 : (healthStatus[a] ? 1 : 2);
             const rankB = activeAlerts.has(b) ? 0 : (healthStatus[b] ? 1 : 2);
@@ -1289,6 +1318,7 @@ function renderJPLTable(reset = false) {
                 <td class="${statusClass}">${status}</td>
                 <td>${id}</td>
                 <td>${jpl.ba || ''}</td>
+                <td>${getDAOPFromBA(jpl.ba)}</td>
                 <td>${jpl.descript || ''}</td>
                 <td>${power}</td>
                 <td class="${batteryClass}">${batteryText}</td>
@@ -1313,14 +1343,14 @@ function updateJPLTableRow(jplId) {
     const power = health ? formatPowerType(health.powerType) : '-';
     const batteryPct = health && health.batteryPersentage != null ? health.batteryPersentage : null;
     const cells = tr.children;
-    cells[4].textContent = power;
-    cells[5].textContent = batteryPct != null ? `${batteryPct}%` : '-';
-    cells[5].className = batteryPct != null && batteryPct < 20 ? 'battery-low' : '';
+    cells[5].textContent = power;
+    cells[6].textContent = batteryPct != null ? `${batteryPct}%` : '-';
+    cells[6].className = batteryPct != null && batteryPct < 20 ? 'battery-low' : '';
     // New fields
-    cells[6].textContent = health?.batteryVoltage != null ? health.batteryVoltage + ' V' : '-';
-    cells[7].textContent = health?.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : '-';
-    cells[8].textContent = health?.signalStrength || '-';
-    cells[9].textContent = formatDateTime(health?.datetime) || '-';
+    cells[7].textContent = health?.batteryVoltage != null ? health.batteryVoltage + ' V' : '-';
+    cells[8].textContent = health?.batteryCharging != null ? (parseCharging(health.batteryCharging) ? 'Ya' : 'Tidak') : '-';
+    cells[9].textContent = health?.signalStrength || '-';
+    cells[10].textContent = formatDateTime(health?.datetime) || '-';
 }
 
 // --- Train Table ---
@@ -1485,6 +1515,98 @@ function showLoadingIndicator(tbody, colspan) {
 function hideLoadingIndicator(tbody) {
     const loader = tbody.querySelector('.loading-row');
     if (loader) loader.remove();
+}
+
+// --- Weekly JPL Activity Summary (per DAOP) ---
+let weeklySummaryLoading = false;
+function fetchWeeklySummary() {
+    const grid = document.getElementById('summary-daop-grid');
+    const rangeEl = document.getElementById('summary-week-range');
+    if (!grid || weeklySummaryLoading) return;
+    weeklySummaryLoading = true;
+    grid.innerHTML = '<div class="summary-loading"><div class="spinner"></div> Memuat ringkasan...</div>';
+
+    fetch(`${API_BASE}/stats/weekly-jpl-activity`)
+        .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.json();
+        })
+        .then(data => renderWeeklySummary(data.items || []))
+        .catch(err => {
+            console.warn('Failed to fetch weekly JPL activity:', err);
+            grid.innerHTML = '<div class="summary-loading">⚠️ Gagal memuat ringkasan mingguan.</div>';
+        })
+        .finally(() => { weeklySummaryLoading = false; });
+
+    if (rangeEl) {
+        const end = new Date();
+        const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const fmt = d => d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+        rangeEl.textContent = `${fmt(start)} – ${fmt(end)}`;
+    }
+}
+function renderWeeklySummary(items) {
+    const grid = document.getElementById('summary-daop-grid');
+    if (!grid) return;
+
+    // Only PB-pressed events count as "active" for this summary — a JPL that only
+    // reported health/battery pings this week isn't a panic-button activation.
+    const activeByDaop = {}; // daop -> [{funcloc, descript, pressed_count}]
+    items.forEach(item => {
+        if (!item.pressed_count) return;
+        const jpl = jplData[item.funcloc];
+        const daop = getDAOPFromBA(jpl ? jpl.ba : null);
+        if (!activeByDaop[daop]) activeByDaop[daop] = [];
+        activeByDaop[daop].push({
+            funcloc: item.funcloc,
+            descript: jpl ? jpl.descript : '',
+            pressed_count: item.pressed_count
+        });
+    });
+
+    const daopOrder = [...new Set(Object.values(BA_DAOP_MAP))];
+    grid.innerHTML = daopOrder.map(daop => {
+        const jpls = (activeByDaop[daop] || []).sort((a, b) => b.pressed_count - a.pressed_count);
+        const jplListHtml = jpls.length
+            ? jpls.map(j => `<div class="summary-jpl-row"><span class="summary-jpl-id">${j.funcloc}</span><span class="summary-jpl-desc">${j.descript || ''}</span><span class="summary-jpl-count">${j.pressed_count}x</span></div>`).join('')
+            : '<div class="summary-jpl-empty">Tidak ada JPL aktif minggu ini</div>';
+        return `
+            <div class="summary-daop-card ${jpls.length ? '' : 'summary-daop-card-empty'}">
+                <div class="summary-daop-header">
+                    <span class="summary-daop-name">${daop}</span>
+                    <span class="summary-daop-count">${jpls.length}</span>
+                </div>
+                <div class="summary-daop-body">${jplListHtml}</div>
+            </div>`;
+    }).join('');
+}
+
+// --- Event Log: Excel Export ---
+const logExportStartEl = document.getElementById('log-export-start');
+const logExportEndEl = document.getElementById('log-export-end');
+const logExportBtn = document.getElementById('log-export-btn');
+if (logExportStartEl && logExportEndEl) {
+    // Default range: last 7 days, matching the Log tab's own default query window.
+    const today = new Date();
+    const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const toInputDate = d => d.toISOString().slice(0, 10);
+    logExportEndEl.value = toInputDate(today);
+    logExportStartEl.value = toInputDate(weekAgo);
+}
+if (logExportBtn) {
+    logExportBtn.addEventListener('click', () => {
+        const start = logExportStartEl.value;
+        const end = logExportEndEl.value;
+        if (!start || !end) {
+            alert('Pilih tanggal mulai dan tanggal akhir terlebih dahulu.');
+            return;
+        }
+        if (start > end) {
+            alert('Tanggal mulai tidak boleh setelah tanggal akhir.');
+            return;
+        }
+        window.location.href = `${API_BASE}/logs/export?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+    });
 }
 
 // ---- Load Offline Railways ----

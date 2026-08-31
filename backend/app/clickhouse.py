@@ -108,6 +108,43 @@ class ClickHouseDB:
     # single exact string, so both the real data and PBPRESSED/PBRELEASED-style feeds work.
     _RELEASE_EVENT_TYPES = ("'release'", "'pbrelease'", "'pbreleased'", "'aman'", "'safe'")
 
+    def fetch_weekly_jpl_activity(self):
+        """Per-funcloc event counts over the last 7 days, for the JPL-Aktif-per-DAOP
+        weekly summary tab. 'pressed_count' excludes release-type events so the
+        frontend can distinguish real panic-button activations from routine releases."""
+        release_list = ", ".join(self._RELEASE_EVENT_TYPES)
+        query = (
+            f"SELECT funcloc, count() AS event_count, "
+            f"countIf(lower(event_type) NOT IN ({release_list})) AS pressed_count, "
+            f"max(event_time) AS last_event "
+            f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE} "
+            f"WHERE event_time >= now() - INTERVAL 7 DAY "
+            f"GROUP BY funcloc ORDER BY pressed_count DESC"
+        )
+        return self._execute(query)
+
+    def fetch_logs_range(self, start: str, end: str, jpl_id: Optional[str] = None):
+        """Fetch ALL panic event logs within an inclusive [start, end] date range
+        (both 'YYYY-MM-DD' strings, already validated by the caller) — used for the
+        Excel export, so unlike fetch_logs() this has no LIMIT/OFFSET pagination
+        (beyond a defensive cap) and no fixed 7-day window."""
+        query = (
+            f"SELECT id, event_time, event_type, trigger_type, device_id, "
+            f"funcloc, jpl_lat, jpl_lon, vtdid, loco_lat, loco_lon, distance_m, "
+            f"previous_alert, alert_changed, release_count, loco_speed, loco_location "
+            f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE}"
+        )
+        conditions = [
+            f"event_time >= {self._escape_string(start)}",
+            f"event_time < {self._escape_string(end)} + INTERVAL 1 DAY",
+        ]
+        if jpl_id:
+            conditions.append(f"funcloc = {self._escape_string(jpl_id)}")
+        query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY event_time DESC LIMIT 100000"
+        logger.info(f"Executing export logs query: {query}")
+        return self._execute(query)
+
     def count_alerts_today(self) -> int:
         """Count panic-press events recorded today (server-local date) — the 'Alert Hari Ini' stat, resets daily via toDate()."""
         release_list = ", ".join(self._RELEASE_EVENT_TYPES)

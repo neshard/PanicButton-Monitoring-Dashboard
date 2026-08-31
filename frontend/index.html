@@ -48,15 +48,23 @@
                 <button class="tab-btn active" data-tab="jpl">JPL</button>
                 <button class="tab-btn" data-tab="train">Kereta</button>
                 <button class="tab-btn" data-tab="log">Event Log</button>
+                <button class="tab-btn" data-tab="summary">Summary</button>
             </div>
             <div id="tab-content">
                 <div id="tab-jpl" class="tab-pane active">
+                    <div class="table-toolbar">
+                        <label for="jpl-daop-filter">DAOP</label>
+                        <select id="jpl-daop-filter">
+                            <option value="">Semua DAOP</option>
+                        </select>
+                    </div>
                     <table id="jpl-table">
                         <thead>
                             <tr>
                                 <th>Status</th>
                                 <th>func_loc</th>
                                 <th>ba</th>
+                                <th>DAOP</th>
                                 <th>Lokasi</th>
                                 <th>Power</th>
                                 <th>Battery</th>
@@ -76,6 +84,13 @@
                     </table>
                 </div>
                 <div id="tab-log" class="tab-pane">
+                    <div class="table-toolbar">
+                        <label for="log-export-start">Dari</label>
+                        <input type="date" id="log-export-start">
+                        <label for="log-export-end">Sampai</label>
+                        <input type="date" id="log-export-end">
+                        <button id="log-export-btn" type="button">⬇ Download Excel</button>
+                    </div>
                     <table id="log-table">
                         <thead>
                             <tr>
@@ -100,6 +115,13 @@
                         </thead>
                         <tbody></tbody>
                     </table>
+                </div>
+                <div id="tab-summary" class="tab-pane">
+                    <div id="summary-header">
+                        <h3>JPL Aktif per DAOP</h3>
+                        <span id="summary-week-range"></span>
+                    </div>
+                    <div id="summary-daop-grid"></div>
                 </div>
             </div>
         </div>
