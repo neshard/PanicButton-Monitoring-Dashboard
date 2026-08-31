@@ -412,13 +412,22 @@ async def get_today_stats():
     return {"alerts_today": alerts_today, "jpl_active_today": jpl_active_today}
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 @app.get("/api/stats/weekly-jpl-activity")
-async def get_weekly_jpl_activity():
-    """Per-funcloc event counts over the last 7 days. The frontend maps funcloc -> ba
-    -> DAOP itself (via its own jplData + BA_DAOP_MAP) to build the JPL-Aktif-per-DAOP
-    summary tab, so this just returns the raw per-JPL counts."""
+async def get_weekly_jpl_activity(start: str = None, end: str = None):
+    """Per-funcloc event counts over an inclusive [start, end] date range (both
+    'YYYY-MM-DD'), or the last 7 days if neither is given. The frontend maps
+    funcloc -> ba -> DAOP itself (via its own jplData + BA_DAOP_MAP) to build the
+    JPL-Aktif-per-DAOP summary tab, so this just returns the raw per-JPL counts."""
+    if (start and not _DATE_RE.match(start)) or (end and not _DATE_RE.match(end)):
+        raise HTTPException(status_code=400, detail="start/end must be in YYYY-MM-DD format")
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="start must not be after end")
+
     try:
-        rows = await asyncio.to_thread(db.fetch_weekly_jpl_activity)
+        rows = await asyncio.to_thread(db.fetch_weekly_jpl_activity, start, end)
     except Exception as e:
         logger.error(f"Failed to fetch weekly JPL activity: {e}")
         rows = []
@@ -433,8 +442,6 @@ async def get_weekly_jpl_activity():
     ]
     return {"items": items}
 
-
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 LOG_EXPORT_HEADERS = [
     "ID", "Waktu", "Tipe", "Trigger", "Device", "Funcloc", "JPL Lat", "JPL Lon",

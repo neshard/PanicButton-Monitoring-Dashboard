@@ -108,19 +108,28 @@ class ClickHouseDB:
     # single exact string, so both the real data and PBPRESSED/PBRELEASED-style feeds work.
     _RELEASE_EVENT_TYPES = ("'release'", "'pbrelease'", "'pbreleased'", "'aman'", "'safe'")
 
-    def fetch_weekly_jpl_activity(self):
-        """Per-funcloc event counts over the last 7 days, for the JPL-Aktif-per-DAOP
-        weekly summary tab. 'pressed_count' excludes release-type events so the
-        frontend can distinguish real panic-button activations from routine releases."""
+    def fetch_weekly_jpl_activity(self, start: Optional[str] = None, end: Optional[str] = None):
+        """Per-funcloc event counts for the JPL-Aktif-per-DAOP summary tab, over an
+        inclusive [start, end] date range ('YYYY-MM-DD' strings, already validated by
+        the caller) — or the last 7 days if no range is given. 'pressed_count' excludes
+        release-type events so the frontend can distinguish real panic-button
+        activations from routine releases."""
         release_list = ", ".join(self._RELEASE_EVENT_TYPES)
         query = (
             f"SELECT funcloc, count() AS event_count, "
             f"countIf(lower(event_type) NOT IN ({release_list})) AS pressed_count, "
             f"max(event_time) AS last_event "
             f"FROM {Config.CH_DATABASE}.{Config.CH_TABLE} "
-            f"WHERE event_time >= now() - INTERVAL 7 DAY "
-            f"GROUP BY funcloc ORDER BY pressed_count DESC"
         )
+        if start and end:
+            conditions = [
+                f"event_time >= {self._escape_string(start)}",
+                f"event_time < {self._escape_string(end)} + INTERVAL 1 DAY",
+            ]
+        else:
+            conditions = ["event_time >= now() - INTERVAL 7 DAY"]
+        query += "WHERE " + " AND ".join(conditions)
+        query += " GROUP BY funcloc ORDER BY pressed_count DESC"
         return self._execute(query)
 
     def fetch_logs_range(self, start: str, end: str, jpl_id: Optional[str] = None):

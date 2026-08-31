@@ -1518,6 +1518,31 @@ function hideLoadingIndicator(tbody) {
 }
 
 // --- Weekly JPL Activity Summary (per DAOP) ---
+const summaryStartEl = document.getElementById('summary-start');
+const summaryEndEl = document.getElementById('summary-end');
+const summaryFilterBtn = document.getElementById('summary-filter-btn');
+if (summaryStartEl && summaryEndEl) {
+    // Default range: last 7 days, same default as the Log tab's export picker.
+    const today = new Date();
+    const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const toInputDate = d => d.toISOString().slice(0, 10);
+    summaryEndEl.value = toInputDate(today);
+    summaryStartEl.value = toInputDate(weekAgo);
+}
+if (summaryFilterBtn) {
+    summaryFilterBtn.addEventListener('click', () => {
+        if (!summaryStartEl.value || !summaryEndEl.value) {
+            alert('Pilih tanggal mulai dan tanggal akhir terlebih dahulu.');
+            return;
+        }
+        if (summaryStartEl.value > summaryEndEl.value) {
+            alert('Tanggal mulai tidak boleh setelah tanggal akhir.');
+            return;
+        }
+        fetchWeeklySummary();
+    });
+}
+
 let weeklySummaryLoading = false;
 function fetchWeeklySummary() {
     const grid = document.getElementById('summary-daop-grid');
@@ -1526,7 +1551,11 @@ function fetchWeeklySummary() {
     weeklySummaryLoading = true;
     grid.innerHTML = '<div class="summary-loading"><div class="spinner"></div> Memuat ringkasan...</div>';
 
-    fetch(`${API_BASE}/stats/weekly-jpl-activity`)
+    const start = summaryStartEl ? summaryStartEl.value : '';
+    const end = summaryEndEl ? summaryEndEl.value : '';
+    const query = start && end ? `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}` : '';
+
+    fetch(`${API_BASE}/stats/weekly-jpl-activity${query}`)
         .then(res => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.json();
@@ -1534,15 +1563,13 @@ function fetchWeeklySummary() {
         .then(data => renderWeeklySummary(data.items || []))
         .catch(err => {
             console.warn('Failed to fetch weekly JPL activity:', err);
-            grid.innerHTML = '<div class="summary-loading">⚠️ Gagal memuat ringkasan mingguan.</div>';
+            grid.innerHTML = '<div class="summary-loading">⚠️ Gagal memuat ringkasan.</div>';
         })
         .finally(() => { weeklySummaryLoading = false; });
 
     if (rangeEl) {
-        const end = new Date();
-        const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const fmt = d => d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
-        rangeEl.textContent = `${fmt(start)} – ${fmt(end)}`;
+        const fmt = s => new Date(s).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+        rangeEl.textContent = start && end ? `${fmt(start)} – ${fmt(end)}` : '';
     }
 }
 function renderWeeklySummary(items) {
@@ -1569,7 +1596,7 @@ function renderWeeklySummary(items) {
         const jpls = (activeByDaop[daop] || []).sort((a, b) => b.pressed_count - a.pressed_count);
         const jplListHtml = jpls.length
             ? jpls.map(j => `<div class="summary-jpl-row"><span class="summary-jpl-id">${j.funcloc}</span><span class="summary-jpl-desc">${j.descript || ''}</span><span class="summary-jpl-count">${j.pressed_count}x</span></div>`).join('')
-            : '<div class="summary-jpl-empty">Tidak ada JPL aktif minggu ini</div>';
+            : '<div class="summary-jpl-empty">Tidak ada JPL aktif pada periode ini</div>';
         return `
             <div class="summary-daop-card ${jpls.length ? '' : 'summary-daop-card-empty'}">
                 <div class="summary-daop-header">
