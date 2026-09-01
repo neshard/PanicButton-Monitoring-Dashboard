@@ -46,6 +46,15 @@ function formatDateTime(isoString) {
         return isoString;
     }
 }
+// 'YYYY-MM-DD' for an <input type="date">, using the viewer's LOCAL calendar date —
+// not toISOString() (UTC), which reads as "yesterday" for Indonesian users (UTC+7/8/9)
+// during local early-morning hours, silently defaulting date-range pickers a day early.
+function toLocalDateInputValue(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
 
 // ---- Header Title Click: Reset Map View ----
 const topBarTitle = document.getElementById('top-bar-title');
@@ -1292,6 +1301,22 @@ function renderJPLTable(reset = false) {
 
             return 0;
         });
+
+        // A DAOP filter hides rows outside it, including any JPL that just went
+        // active (this function reruns on every new panic alert) — without this,
+        // the top-bar "JPL Aktif" counter can climb while the filtered table looks
+        // untouched, with no clue an alert is hidden behind the current filter.
+        const warningEl = document.getElementById('jpl-filter-hidden-alert-warning');
+        if (warningEl) {
+            const hiddenActiveCount = daopFilter
+                ? [...activeAlerts].filter(id => getDAOPFromBA((jplData[id] || {}).ba) !== daopFilter).length
+                : 0;
+            warningEl.hidden = hiddenActiveCount === 0;
+            if (hiddenActiveCount > 0) {
+                warningEl.textContent = `⚠️ ${hiddenActiveCount} JPL aktif di luar filter ini`;
+            }
+        }
+
         tbody.innerHTML = '';
         jplRowElements = {};
     }
@@ -1525,9 +1550,8 @@ if (summaryStartEl && summaryEndEl) {
     // Default range: last 7 days, same default as the Log tab's export picker.
     const today = new Date();
     const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const toInputDate = d => d.toISOString().slice(0, 10);
-    summaryEndEl.value = toInputDate(today);
-    summaryStartEl.value = toInputDate(weekAgo);
+    summaryEndEl.value = toLocalDateInputValue(today);
+    summaryStartEl.value = toLocalDateInputValue(weekAgo);
 }
 if (summaryFilterBtn) {
     summaryFilterBtn.addEventListener('click', () => {
@@ -1597,16 +1621,23 @@ function renderWeeklySummary(items) {
         });
     });
 
+    // Items whose funcloc isn't in jplData yet (e.g. summary fetched before the JPL
+    // master list arrived over the websocket) or whose 'ba' isn't one of the known
+    // codes land in the '-' bucket — surface them in their own card instead of
+    // silently dropping them, so activity is never undercounted without a trace.
     const daopOrder = [...new Set(Object.values(BA_DAOP_MAP))];
+    if (activeByDaop['-']) daopOrder.push('-');
+
     grid.innerHTML = daopOrder.map(daop => {
         const jpls = (activeByDaop[daop] || []).sort((a, b) => b.pressed_count - a.pressed_count);
         const jplListHtml = jpls.length
             ? jpls.map(j => `<div class="summary-jpl-row"><span class="summary-jpl-id">${j.funcloc}</span><span class="summary-jpl-desc">${j.descript || ''}</span><span class="summary-jpl-count">${j.pressed_count}x</span></div>`).join('')
             : '<div class="summary-jpl-empty">Tidak ada JPL aktif pada periode ini</div>';
+        const daopLabel = daop === '-' ? 'Belum Termapping' : daop;
         return `
             <div class="summary-daop-card ${jpls.length ? '' : 'summary-daop-card-empty'}">
                 <div class="summary-daop-header">
-                    <span class="summary-daop-name">${daop}</span>
+                    <span class="summary-daop-name">${daopLabel}</span>
                     <span class="summary-daop-count">${jpls.length}</span>
                 </div>
                 <div class="summary-daop-body">${jplListHtml}</div>
@@ -1622,9 +1653,8 @@ if (logExportStartEl && logExportEndEl) {
     // Default range: last 7 days, matching the Log tab's own default query window.
     const today = new Date();
     const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const toInputDate = d => d.toISOString().slice(0, 10);
-    logExportEndEl.value = toInputDate(today);
-    logExportStartEl.value = toInputDate(weekAgo);
+    logExportEndEl.value = toLocalDateInputValue(today);
+    logExportStartEl.value = toLocalDateInputValue(weekAgo);
 }
 if (logExportBtn) {
     logExportBtn.addEventListener('click', () => {
@@ -1638,7 +1668,36 @@ if (logExportBtn) {
             alert('Tanggal mulai tidak boleh setelah tanggal akhir.');
             return;
         }
-        window.location.href = `${API_BASE}/logs/export?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+        // Fetch + blob download instead of a raw `location.href` navigation — a plain
+        // navigation to a URL that 500s (e.g. the DB query failing) would load the
+        // backend's raw JSON error response in place of the whole dashboard, tearing
+        // down the live WebSocket connection and all in-memory state.
+        const originalLabel = logExportBtn.textContent;
+        logExportBtn.disabled = true;
+        logExportBtn.textContent = 'Mengunduh...';
+        fetch(`${API_BASE}/logs/export?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
+            .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.blob();
+            })
+            .then(blob => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `event_log_${start}_to_${end}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            })
+            .catch(err => {
+                console.warn('Failed to export logs:', err);
+                alert('Gagal mengunduh Excel. Coba lagi beberapa saat.');
+            })
+            .finally(() => {
+                logExportBtn.disabled = false;
+                logExportBtn.textContent = originalLabel;
+            });
     });
 }
 

@@ -412,7 +412,7 @@ async def get_today_stats():
     return {"alerts_today": alerts_today, "jpl_active_today": jpl_active_today}
 
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")  # \Z (not $) so a trailing newline can't sneak past the anchor
 
 
 @app.get("/api/stats/weekly-jpl-activity")
@@ -428,11 +428,15 @@ async def get_weekly_jpl_activity(start: str = None, end: str = None):
     if start and end and start > end:
         raise HTTPException(status_code=400, detail="start must not be after end")
 
+    # Unlike /api/stats/today (which intentionally degrades to 0 so the top-bar stat
+    # widgets never block on a flaky DB), a failed query here must NOT render as an
+    # empty, all-quiet week on a panic-button safety summary — so this raises instead
+    # of swallowing the error, matching the sibling /api/logs/export endpoint.
     try:
         rows = await asyncio.to_thread(db.fetch_weekly_jpl_activity, start, end)
     except Exception as e:
         logger.error(f"Failed to fetch weekly JPL activity: {e}")
-        rows = []
+        raise HTTPException(status_code=500, detail="Failed to fetch weekly JPL activity")
     items = [
         {
             "funcloc": row[0],

@@ -323,6 +323,11 @@ body {
     color: var(--text-muted);
 }
 
+.hidden-alert-warning {
+    font-weight: 600;
+    color: var(--status-hati-hati);
+}
+
 .table-toolbar select,
 .table-toolbar input[type="date"] {
     background: var(--panel-bg-alt);
