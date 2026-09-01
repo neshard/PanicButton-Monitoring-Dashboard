@@ -6,9 +6,10 @@ const API_BASE = '/api';
 const STATUS_LABELS = {
     'pbreleased': 'Aman', 'release': 'Aman', 'aman': 'Aman', 'safe': 'Aman',
     'pbpressed': 'Bahaya', 'bahaya': 'Bahaya', 'danger': 'Bahaya',
-    'hati-hati': 'Hati-hati', 'hati hati': 'Hati-hati', 'perhatian': 'Hati-hati', 'caution': 'Hati-hati', 'warning': 'Hati-hati'
+    'hati-hati': 'Hati-hati', 'hati hati': 'Hati-hati', 'perhatian': 'Hati-hati', 'caution': 'Hati-hati', 'warning': 'Hati-hati',
+    'inactive': 'Inactive', 'tidak aktif': 'Inactive'
 };
-const STATUS_CLASS = { 'Aman': 'status-aman', 'Hati-hati': 'status-hati-hati', 'Bahaya': 'status-bahaya' };
+const STATUS_CLASS = { 'Aman': 'status-aman', 'Hati-hati': 'status-hati-hati', 'Bahaya': 'status-bahaya', 'Inactive': 'status-inactive' };
 function formatStatusLabel(raw) {
     if (!raw) return '';
     const key = String(raw).trim().toLowerCase();
@@ -113,7 +114,7 @@ let staleSignalAlerted = new Set(); // jplId currently showing a signal-loss ale
 let jplPowerWarningState = {};
 let jplPowerWarningTimeouts = {};
 let previousPowerState = {}; // jplId -> previous power type (LINE/BATTERY)
-const HEALTH_STALE_MS = 5 * 60 * 1000; // 5 minutes
+const HEALTH_STALE_MS = 2 * 60 * 1001; // 2 minutes
 
 function parseCharging(value) {
     if (value === null || value === undefined) return false;
@@ -316,8 +317,15 @@ function updateTopBarStats() {
     // PBPRESSED adds the JPL and PBRELEASED removes it from activeAlerts.
     document.getElementById('stat-jpl-active').textContent = activeAlerts.size;
 
+    // Count trains with active LED status (ledKuning or ledMerah is 1)
+    // This is real-time and doesn't depend on timing of LED messages relative to panic button
     const affectedTrains = new Set();
-    Object.values(jplCaughtTrains).forEach(vtdids => vtdids.forEach(v => affectedTrains.add(v)));
+    Object.keys(ledStatus).forEach(vtdid => {
+        const led = ledStatus[vtdid];
+        if (led.ledKuning === '1' || led.ledMerah === '1') {
+            affectedTrains.add(vtdid);
+        }
+    });
     document.getElementById('stat-train-affected').textContent = affectedTrains.size;
 
     document.getElementById('stat-alerts-today').textContent = alertsToday;
@@ -400,6 +408,7 @@ function handleWebSocketMessage(msg) {
         msg.data.forEach(led => {
             ledStatus[led.vtdid] = led;
         });
+        updateTopBarStats(); // Update Kereta Terpengaruh counter
         renderTrainTable(true);
 
     } else if (msg.type === 'train_update') {
@@ -412,6 +421,11 @@ function handleWebSocketMessage(msg) {
         updateTrainMarkerColor(msg.data.vtdid);
         updateTrainTableRow(msg.data.vtdid);
         addTrainLEDAlert(msg.data);
+        updateTopBarStats(); // Update Kereta Terpengaruh counter
+        // Re-sort train table when LED status changes
+        if (currentView === 'train') {
+            renderTrainTable(true);
+        }
 
     } else if (msg.type === 'panic_alert') {
         // 🚀 LIVE EVENT: Show popup ONLY when a new panic button is pressed
@@ -465,13 +479,25 @@ function handleWebSocketMessage(msg) {
         const h = normalizeHealthPayload(msg.data);
         if (h.jplId) {
             const isFirstReport = !healthStatus[h.jplId];
+            const oldHealth = healthStatus[h.jplId];
             healthStatus[h.jplId] = h;
             if (!healthStatus[h.jplId].__firstSeenAt) {
                 healthStatus[h.jplId].__firstSeenAt = Date.now();
             }
             if (jplData[h.jplId]) jplData[h.jplId].healthStatus = h;
+            
+            // Check if battery status changed (crossed 20% threshold)
+            const oldBatt = oldHealth ? (oldHealth.batteryPercentage || oldHealth.batteryPersentage) : null;
+            const newBatt = h.batteryPercentage || h.batteryPersentage;
+            const wasLow = oldBatt != null && parseFloat(oldBatt) < 20;
+            const isLow = newBatt != null && parseFloat(newBatt) < 20;
+            const batteryStatusChanged = wasLow !== isLow;
+            
             if (isFirstReport && currentView === 'jpl') {
                 // Move this JPL up into the "has battery data" tier now that it just reported for the first time.
+                renderJPLTable(true);
+            } else if (batteryStatusChanged && currentView === 'jpl') {
+                // Re-sort when battery status crosses the 20% threshold
                 renderJPLTable(true);
             } else {
                 updateJPLTableRow(h.jplId);
@@ -1202,6 +1228,7 @@ function addLowBatteryAlert(jplId, health) {
 // of updates — a JPL that simply stops sending health data needs to be caught by polling.
 function checkHealthStaleness() {
     const now = Date.now();
+    let needsReSort = false;
     Object.keys(healthStatus).forEach(jplId => {
         const h = healthStatus[jplId];
         const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
@@ -1211,12 +1238,19 @@ function checkHealthStaleness() {
             staleSignalAlerted.add(jplId);
             addInactivePanicButtonAlert(jplId, h);
             updateJPLMarkerColor(jplId); // 🚀 Paint Yellow
+            updateJPLTableRow(jplId); // 🚀 Update table status to Inactive
+            needsReSort = true;
         } else if (!isStale && staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.delete(jplId);
             removeAlertCardsBy('data-stale-jpl', jplId);
             updateJPLMarkerColor(jplId); // 🚀 Paint Blue (Recovered)
+            updateJPLTableRow(jplId); // 🚀 Update table status to Aman
+            needsReSort = true;
         }
     });
+    if (needsReSort && currentView === 'jpl') {
+        renderJPLTable(true);
+    }
 }
 setInterval(checkHealthStaleness, 30 * 1000);
 
@@ -1267,6 +1301,14 @@ function formatPowerType(raw) {
     if (raw === 'BATTERY') return 'Baterai';
     return raw || '-';
 }
+function isJPLInactive(jplId) {
+    const h = healthStatus[jplId];
+    if (!h) return false;
+    const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+    if (isNaN(firstSeenAt)) return false;
+    return (Date.now() - firstSeenAt) > HEALTH_STALE_MS;
+}
+
 function renderJPLTable(reset = false) {
     const tbody = document.querySelector('#jpl-table tbody'); if (!tbody) return;
     if (reset) {
@@ -1275,10 +1317,23 @@ function renderJPLTable(reset = false) {
         sortedJPLIDs = Object.keys(jplData)
             .filter(id => !daopFilter || getDAOPFromBA(jplData[id].ba) === daopFilter)
             .sort((a, b) => {
-            // Primary sort: Active PB alerts first, then JPLs with health status, then no health data
-            const rankA = activeAlerts.has(a) ? 0 : (healthStatus[a] ? 1 : 2);
-            const rankB = activeAlerts.has(b) ? 0 : (healthStatus[b] ? 1 : 2);
-            if (rankA !== rankB) return rankA - rankB;
+            // Primary sort: Bahaya (active PB), Inactive (stale), Low battery, Aman
+            const isBahayaA = activeAlerts.has(a);
+            const isBahayaB = activeAlerts.has(b);
+            if (isBahayaA && !isBahayaB) return -1;
+            if (!isBahayaA && isBahayaB) return 1;
+
+            const isInactiveA = isJPLInactive(a);
+            const isInactiveB = isJPLInactive(b);
+            if (isInactiveA && !isInactiveB) return -1;
+            if (!isInactiveA && isInactiveB) return 1;
+
+            const battA = healthStatus[a] ? (healthStatus[a].batteryPercentage || healthStatus[a].batteryPersentage) : null;
+            const battB = healthStatus[b] ? (healthStatus[b].batteryPercentage || healthStatus[b].batteryPersentage) : null;
+            const isLowA = battA != null && parseFloat(battA) < 20;
+            const isLowB = battB != null && parseFloat(battB) < 20;
+            if (isLowA && !isLowB) return -1;
+            if (!isLowA && isLowB) return 1;
 
             // Secondary sort: Power type (Battery/Baterai before Line)
             const powerA = healthStatus[a] ? String(healthStatus[a].powerType || healthStatus[a].power || '').toUpperCase() : '';
@@ -1286,13 +1341,6 @@ function renderJPLTable(reset = false) {
             const powerRankA = powerA === 'BATTERY' ? 0 : (powerA === 'LINE' ? 1 : 2);
             const powerRankB = powerB === 'BATTERY' ? 0 : (powerB === 'LINE' ? 1 : 2);
             if (powerRankA !== powerRankB) return powerRankA - powerRankB;
-
-            // Tertiary sort: Battery percentage (low battery < 20% before higher battery)
-            const battA = healthStatus[a] ? (healthStatus[a].batteryPercentage || healthStatus[a].batteryPersentage) : null;
-            const battB = healthStatus[b] ? (healthStatus[b].batteryPercentage || healthStatus[b].batteryPersentage) : null;
-            const isLowA = battA != null && parseFloat(battA) < 20;
-            const isLowB = battB != null && parseFloat(battB) < 20;
-            if (isLowA !== isLowB) return isLowA ? -1 : 1;
 
             // Final sort: Battery percentage ascending (lower battery first)
             if (battA != null && battB != null) return parseFloat(battA) - parseFloat(battB);
@@ -1326,7 +1374,14 @@ function renderJPLTable(reset = false) {
 
     const html = nextBatchIDs.map(id => {
         const jpl = jplData[id] || {};
-        const status = formatStatusLabel(activeAlerts.has(id) ? 'pbpressed' : 'release');
+        let status;
+        if (activeAlerts.has(id)) {
+            status = formatStatusLabel('pbpressed');
+        } else if (isJPLInactive(id)) {
+            status = formatStatusLabel('inactive');
+        } else {
+            status = formatStatusLabel('release');
+        }
         const statusClass = statusClassFor(status);
         const health = healthStatus[id];
         const power = health ? formatPowerType(health.powerType) : '-';
@@ -1368,6 +1423,21 @@ function updateJPLTableRow(jplId) {
     const power = health ? formatPowerType(health.powerType) : '-';
     const batteryPct = health && health.batteryPersentage != null ? health.batteryPersentage : null;
     const cells = tr.children;
+    
+    // Update status column
+    let status;
+    if (activeAlerts.has(jplId)) {
+        status = formatStatusLabel('pbpressed');
+    } else if (isJPLInactive(jplId)) {
+        status = formatStatusLabel('inactive');
+    } else {
+        status = formatStatusLabel('release');
+    }
+    const statusClass = statusClassFor(status);
+    cells[0].textContent = status;
+    cells[0].className = statusClass;
+    tr.className = `data-row ${statusClass}`;
+    
     cells[5].textContent = power;
     cells[6].textContent = batteryPct != null ? `${batteryPct}%` : '-';
     cells[6].className = batteryPct != null && batteryPct < 20 ? 'battery-low' : '';

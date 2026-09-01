@@ -528,6 +528,7 @@ tbody tr:hover {
 .status-aman { color: var(--status-aman); font-weight: 600; }
 .status-hati-hati { color: var(--status-hati-hati); font-weight: 600; }
 .status-bahaya { color: var(--status-bahaya); font-weight: 600; }
+.status-inactive { color: var(--status-hati-hati); font-weight: 600; }
 
 /* JPL health/battery — low battery (<20%) shown in red */
 .battery-low { color: var(--status-bahaya); font-weight: 600; }
