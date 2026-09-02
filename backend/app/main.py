@@ -226,7 +226,21 @@ async def lifespan(app: FastAPI):
                 'eventType': event_type
             }
             if jpl_id and last_panic_state.get(jpl_id) == panic_key:
-                return  # Skip duplicate message
+                # Same event repeated (e.g. device keeps re-sending PBPRESSED while the
+                # button is held) — broadcast a heartbeat so the active alert's timestamp
+                # and the dashboard know it's still live, without re-spawning a new card
+                # or re-appending a duplicate row to the in-memory panic_alerts list.
+                # Update the event timestamp to current time so the frontend sees it's still active.
+                event['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                asyncio.run_coroutine_threadsafe(
+                    manager.broadcast(json.dumps({
+                        "type": "panic_alert",
+                        "data": event,
+                        "heartbeat": True
+                    })),
+                    main_loop
+                )
+                return
             if jpl_id:
                 last_panic_state[jpl_id] = panic_key
 
@@ -267,6 +281,9 @@ async def lifespan(app: FastAPI):
             payload = normalize_health_payload(payload)
             jpl_id = payload.get('jplId') or payload.get('funcloc')
             if jpl_id:
+                # Always update datetime to current time to prevent inactive warning
+                payload['datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
                 # Deduplication: check power source and battery percentage (rounded to nearest 5% to avoid minor fluctuations)
                 power_type = str(payload.get('powerType') or payload.get('power') or '').upper()
                 pct = payload.get('batteryPercentage') or payload.get('batteryPersentage')
@@ -287,7 +304,20 @@ async def lifespan(app: FastAPI):
                 }
                 
                 if last_health_state.get(jpl_id) == health_key:
-                    return  # Skip duplicate message
+                    # Content unchanged from last message — still update our own record
+                    # AND still broadcast, but flagged as a heartbeat. The frontend uses
+                    # heartbeats to refresh "last seen"/staleness tracking without
+                    # re-triggering popups/tooltips for content that hasn't changed.
+                    health_status[jpl_id] = payload
+                    asyncio.run_coroutine_threadsafe(
+                        manager.broadcast(json.dumps({
+                            "type": "health_update",
+                            "data": payload,
+                            "heartbeat": True
+                        })),
+                        main_loop
+                    )
+                    return
                 last_health_state[jpl_id] = health_key
 
                 health_status[jpl_id] = payload
@@ -306,7 +336,18 @@ async def lifespan(app: FastAPI):
                     'buzzer': payload.get('buzzer')
                 }
                 if last_led_state.get(vtdid) == led_key:
-                    return  # Skip duplicate message
+                    # Same LED state as before — broadcast a heartbeat so the train table's
+                    # "last seen" timestamp doesn't freeze, but don't re-spawn a warning card.
+                    led_status[vtdid] = payload
+                    asyncio.run_coroutine_threadsafe(
+                        manager.broadcast(json.dumps({
+                            "type": "led_update",
+                            "data": {"vtdid": vtdid, **payload},
+                            "heartbeat": True
+                        })),
+                        main_loop
+                    )
+                    return
                 last_led_state[vtdid] = led_key
 
                 led_status[vtdid] = payload

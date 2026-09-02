@@ -34,6 +34,65 @@ function getDAOPFromBA(ba) {
 function formatDateTime(isoString) {
     if (!isoString) return '-';
     try {
+        // Try ISO format with T and timezone: 2026-08-26T08:29:40+07:00 or 2026-08-26T08:29:40Z
+        const isoMatch = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:([+-])(\d{2}):(\d{2})|Z)?/);
+        if (isoMatch) {
+            const [, year, month, day, hours, minutes, seconds, tzSign, tzHours, tzMinutes] = isoMatch;
+            let h = parseInt(hours, 10);
+            let m = parseInt(minutes, 10);
+            // Add timezone offset if present
+            if (tzSign && tzHours) {
+                const offsetHours = parseInt(tzHours, 10);
+                const offsetMinutes = parseInt(tzMinutes || '00', 10);
+                const totalOffsetMinutes = (offsetHours * 60 + offsetMinutes) * (tzSign === '+' ? 1 : -1);
+                const totalMinutes = h * 60 + m + totalOffsetMinutes;
+                h = Math.floor(totalMinutes / 60) % 24;
+                if (h < 0) h += 24; // Handle negative hours from timezone offset
+                m = totalMinutes % 60;
+                if (m < 0) m += 60; // Handle negative minutes
+            }
+            const formattedH = String(h).padStart(2, '0');
+            const formattedM = String(m).padStart(2, '0');
+            return `${day}/${month}/${year} ${formattedH}:${formattedM}:${seconds}`;
+        }
+        
+        // Try space-separated format: 2026-08-26 08:29:40 (no timezone offset needed)
+        const spaceMatch = isoString.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (spaceMatch) {
+            const [, year, month, day, hours, minutes, seconds] = spaceMatch;
+            return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+        }
+        
+        // Try format with milliseconds: 2026-08-26T08:29:40.123+07:00
+        const msMatch = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.?\d*(?:([+-])(\d{2}):(\d{2})|Z)?/);
+        if (msMatch) {
+            const [, year, month, day, hours, minutes, seconds, tzSign, tzHours, tzMinutes] = msMatch;
+            let h = parseInt(hours, 10);
+            let m = parseInt(minutes, 10);
+            // Add timezone offset if present
+            if (tzSign && tzHours) {
+                const offsetHours = parseInt(tzHours, 10);
+                const offsetMinutes = parseInt(tzMinutes || '00', 10);
+                const totalOffsetMinutes = (offsetHours * 60 + offsetMinutes) * (tzSign === '+' ? 1 : -1);
+                const totalMinutes = h * 60 + m + totalOffsetMinutes;
+                h = Math.floor(totalMinutes / 60) % 24;
+                if (h < 0) h += 24; // Handle negative hours from timezone offset
+                m = totalMinutes % 60;
+                if (m < 0) m += 60; // Handle negative minutes
+            }
+            const formattedH = String(h).padStart(2, '0');
+            const formattedM = String(m).padStart(2, '0');
+            return `${day}/${month}/${year} ${formattedH}:${formattedM}:${seconds}`;
+        }
+        
+        // Try slash-separated format: 2026/08/26 08:29:40
+        const slashMatch = isoString.match(/^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (slashMatch) {
+            const [, year, month, day, hours, minutes, seconds] = slashMatch;
+            return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+        }
+        
+        // Fallback to Date parsing if regex doesn't match
         const date = new Date(isoString);
         if (isNaN(date.getTime())) return isoString;
         const day = String(date.getDate()).padStart(2, '0');
@@ -115,6 +174,10 @@ let jplPowerWarningState = {};
 let jplPowerWarningTimeouts = {};
 let previousPowerState = {}; // jplId -> previous power type (LINE/BATTERY)
 const HEALTH_STALE_MS = 2 * 60 * 1001; // 2 minutes
+
+// 🆕 Track previous battery/power for re‑sort detection
+let prevBatteryPct = {};
+let prevPowerType = {};
 
 function parseCharging(value) {
     if (value === null || value === undefined) return false;
@@ -385,6 +448,36 @@ function autoFocusOnDensity() {
     initialFocusDone = true;
 }
 
+// 🆕 Helper: determine JPL status for the Status column
+function getJPLStatus(jplId) {
+    if (activeAlerts.has(jplId)) return { label: 'Bahaya', cls: 'status-bahaya' };
+    if (isJPLStale(jplId)) return { label: 'Inactive', cls: 'status-inactive' };
+    return { label: 'Aman', cls: 'status-aman' };
+}
+
+// 🆕 Update a single JPL row's status cell (used when staleness changes)
+function updateJPLTableRowStatus(jplId) {
+    const tr = jplRowElements[jplId];
+    if (!tr) return;
+    const { label, cls } = getJPLStatus(jplId);
+    const td = tr.cells[0];
+    td.textContent = label;
+    td.className = cls;
+}
+
+// 🆕 Re‑sort the JPL table immediately (reset and re-render)
+function reorderJPLTable() {
+    renderJPLTable(true);
+}
+
+// ---- JPL Color State Helpers ----
+function isJPLStale(jplId) {
+    const h = healthStatus[jplId];
+    if (!h) return false;
+    const lastSeenAt = h.__lastSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+    return !isNaN(lastSeenAt) && (Date.now() - lastSeenAt) > HEALTH_STALE_MS;
+}
+
 function handleWebSocketMessage(msg) {
     if (msg.type === 'jpl_list') {
         msg.data.forEach(jpl => addJPLMarker(jpl));
@@ -404,109 +497,122 @@ function handleWebSocketMessage(msg) {
         autoFocusOnDensity();
 
     } else if (msg.type === 'led_list') {
-        // 🚀 FIX: Update background status ONLY, do NOT trigger popups for historical data
+        // Restore LED statuses and re‑create alert cards for active warnings
         msg.data.forEach(led => {
             ledStatus[led.vtdid] = led;
+            // 🆕 Re‑create the warning popup if LED is active
+            if (led.ledMerah === '1' || led.ledKuning === '1') {
+                addTrainLEDAlert(led);
+            }
         });
-        updateTopBarStats(); // Update Kereta Terpengaruh counter
         renderTrainTable(true);
+        updateTopBarStats(); // Refresh Kereta Terpengaruh count
 
     } else if (msg.type === 'train_update') {
         const nearestJPL = updateTrain(msg.data);
         updateTrainTableRow(msg.data.L_VTDID, nearestJPL);
 
     } else if (msg.type === 'led_update') {
-        // 🚀 LIVE EVENT: Show popup ONLY when a new real-time message arrives
         ledStatus[msg.data.vtdid] = msg.data;
         updateTrainMarkerColor(msg.data.vtdid);
         updateTrainTableRow(msg.data.vtdid);
-        addTrainLEDAlert(msg.data);
-        updateTopBarStats(); // Update Kereta Terpengaruh counter
-        // Re-sort train table when LED status changes
-        if (currentView === 'train') {
-            renderTrainTable(true);
+        if (!msg.heartbeat) {
+            addTrainLEDAlert(msg.data);
         }
+        updateTopBarStats(); // Refresh Kereta Terpengaruh count
 
     } else if (msg.type === 'panic_alert') {
-        // 🚀 LIVE EVENT: Show popup ONLY when a new panic button is pressed
-        addJPLPanicAlert(msg.data);
-        renderJPLTable(true);
+        if (!msg.heartbeat) {
+            addJPLPanicAlert(msg.data);
+            renderJPLTable(true);
+        }
 
     } else if (msg.type === 'panic_alerts') {
-        // 🚀 FIX: Restore map marker state for active JPL alerts without spawning popups
+        // Restore active JPL alerts and re‑create popups on refresh
         msg.data.forEach(alertData => {
             const event = alertData.event || alertData;
             if (event.jplId) {
                 activeAlerts.add(event.jplId);
                 jplCaughtTrains[event.jplId] = (alertData.caught_trains || []).map(c => c.vtdid);
                 setJPLState(event.jplId, 'pbpressed');
+                // 🆕 Re‑create the panic card (pass isInitialLoad=true)
+                addJPLPanicAlert(alertData, true);
             }
         });
         renderJPLTable(true);
-        refreshTrainTableJPLColumn(); // reflect restored active JPLs in the distance-to-active-JPL column
-        // train_list arrives BEFORE panic_alerts on initial connect, so trains rendered
-        // earlier had no active JPLs to compare against yet — refresh their map tooltips/popups now.
+        refreshTrainTableJPLColumn();
         refreshAllTrainJPLTooltips();
         refreshAllTrainPopups();
         updateTopBarStats();
 
-        // If the page just loaded (or reloaded) while a PB event was already active, zoom
-        // in a bit so it's immediately visible — but only once, not on every WS reconnect.
         if (!initialPBZoomDone) {
             if (activeAlerts.size > 0) zoomToActiveJPLs();
             initialPBZoomDone = true;
         }
 
     } else if (msg.type === 'health_list') {
-        // Restore known battery/power state without spawning alert cards for historical data.
         msg.data.forEach(h => {
             const normalized = normalizeHealthPayload(h);
             if (normalized.jplId) {
-                healthStatus[normalized.jplId] = normalized;
-                if (!healthStatus[normalized.jplId].__firstSeenAt) {
-                    healthStatus[normalized.jplId].__firstSeenAt = Date.now();
+                const parsedDatetime = normalized.datetime ? new Date(normalized.datetime).getTime() : NaN;
+                // Only set __lastSeenAt if datetime is valid; leave it undefined for historical data without valid timestamps
+                if (!isNaN(parsedDatetime)) {
+                    normalized.__lastSeenAt = parsedDatetime;
                 }
+                healthStatus[normalized.jplId] = normalized;
                 if (jplData[normalized.jplId]) jplData[normalized.jplId].healthStatus = normalized;
+                // 🆕 Store initial battery/power for change detection
+                prevBatteryPct[normalized.jplId] = normalized.batteryPersentage;
+                prevPowerType[normalized.jplId] = normalized.powerType;
             }
         });
         renderJPLTable(true);
         checkHealthStaleness();
-        syncJPLHealthPopupState(true); // Pass true for initial load to show battery popups
+        syncJPLHealthPopupState(true);
         Object.keys(jplData).forEach(jplId => setJPLState(jplId, activeAlerts.has(jplId) ? 'pbpressed' : 'release'));
 
     } else if (msg.type === 'health_update') {
-        // 🚀 LIVE EVENT: check low-battery condition and (re)spawn an alert card if needed.
         const h = normalizeHealthPayload(msg.data);
         if (h.jplId) {
             const isFirstReport = !healthStatus[h.jplId];
-            const oldHealth = healthStatus[h.jplId];
-            healthStatus[h.jplId] = h;
-            if (!healthStatus[h.jplId].__firstSeenAt) {
-                healthStatus[h.jplId].__firstSeenAt = Date.now();
+            const isHeartbeat = !!msg.heartbeat;
+            h.__lastSeenAt = Date.now();
+
+            // 🆕 Detect battery/power changes for re‑sort
+            const oldPct = prevBatteryPct[h.jplId];
+            const oldPower = prevPowerType[h.jplId];
+            const newPct = h.batteryPersentage;
+            const newPower = h.powerType;
+            // Round to nearest 5% to match backend deduplication logic
+            const roundPct = (pct) => pct != null ? Math.round(parseFloat(pct) / 5) * 5 : null;
+            const oldPctRounded = roundPct(oldPct);
+            const newPctRounded = roundPct(newPct);
+            const pctChanged = (oldPctRounded !== null && oldPctRounded !== newPctRounded);
+            const powerChanged = (oldPower !== undefined && oldPower !== newPower);
+            if (pctChanged || powerChanged) {
+                reorderJPLTable();
             }
+            // Update stored values
+            prevBatteryPct[h.jplId] = newPct;
+            prevPowerType[h.jplId] = newPower;
+
+            healthStatus[h.jplId] = h;
             if (jplData[h.jplId]) jplData[h.jplId].healthStatus = h;
-            
-            // Check if battery status changed (crossed 20% threshold)
-            const oldBatt = oldHealth ? (oldHealth.batteryPercentage || oldHealth.batteryPersentage) : null;
-            const newBatt = h.batteryPercentage || h.batteryPersentage;
-            const wasLow = oldBatt != null && parseFloat(oldBatt) < 20;
-            const isLow = newBatt != null && parseFloat(newBatt) < 20;
-            const batteryStatusChanged = wasLow !== isLow;
-            
+
             if (isFirstReport && currentView === 'jpl') {
-                // Move this JPL up into the "has battery data" tier now that it just reported for the first time.
-                renderJPLTable(true);
-            } else if (batteryStatusChanged && currentView === 'jpl') {
-                // Re-sort when battery status crosses the 20% threshold
                 renderJPLTable(true);
             } else {
                 updateJPLTableRow(h.jplId);
             }
-            setJPLState(h.jplId, 'release');
-            updateJPLPowerWarningBadge(h.jplId, isFirstReport); // Pass isFirstReport for first health message
-            updateJPLPopupContent(h.jplId);
-            checkLowBattery(h.jplId);
+
             checkHealthStaleness();
+
+            if (!isHeartbeat) {
+                setJPLState(h.jplId, 'release');
+                updateJPLPowerWarningBadge(h.jplId, isFirstReport);
+                updateJPLPopupContent(h.jplId);
+                checkLowBattery(h.jplId);
+            }
         }
     }
 }
@@ -844,21 +950,13 @@ function startPulse(jplId) {
         marker.setRadius(r);
     }, 200);
 }
-// ---- JPL Color State Helpers ----
-function isJPLStale(jplId) {
-    const h = healthStatus[jplId];
-    if (!h) return false;
-    const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
-    return !isNaN(firstSeenAt) && (Date.now() - firstSeenAt) > HEALTH_STALE_MS;
-}
 
 function getJPLFillColor(jplId) {
-    if (activeAlerts.has(jplId)) return '#ff453a'; // 1. Panic (Red)
     const h = healthStatus[jplId];
     if (!h) return '#8a8f98'; // 2. No health data ever (Grey)
     
-    const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
-    const isStale = !isNaN(firstSeenAt) && (Date.now() - firstSeenAt) > HEALTH_STALE_MS;
+    const lastSeenAt = h.__lastSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+    const isStale = !isNaN(lastSeenAt) && (Date.now() - lastSeenAt) > HEALTH_STALE_MS;
     if (isStale) return '#ffd60a'; // 3. Stale / Offline (Yellow)
     
     const pct = Number(h.batteryPersentage);
@@ -1015,13 +1113,11 @@ function clearAlertForJPL(jplId) {
 
 const RELEASE_EVENT_TYPES = new Set(['RELEASE', 'PBRELEASE', 'PBRELEASED', 'AMAN', 'SAFE']);
 
-function addJPLPanicAlert(alertData) {
+function addJPLPanicAlert(alertData, isInitialLoad = false) {
     const event = alertData.event || alertData;
     const jplId = event.jplId;
     const eventType = String(event.eventType || '').toUpperCase();
 
-    // The live device feed isn't a strict PBPRESSED/PBRELEASED binary — it also sends
-    // 'release'/'bahaya'/'perhatian' (Indonesian) — so match by name, not one exact string.
     if (RELEASE_EVENT_TYPES.has(eventType)) {
         clearAlertForJPL(jplId);
         return;
@@ -1029,12 +1125,14 @@ function addJPLPanicAlert(alertData) {
 
     activeAlerts.add(jplId);
     jplCaughtTrains[jplId] = (alertData.caught_trains || []).map(c => c.vtdid);
-    alertsToday++;
-    updateTopBarStats();
-    fetchTodayStats(); // resync "JPL Aktif" from the DB log
-    refreshTrainTableJPLColumn(); // refresh distance-to-active-JPL info on trains
-    refreshAllTrainJPLTooltips(); // show map-label distances for trains now near this JPL
-    refreshAllTrainPopups(); // so clicking a train right after this event shows the warning immediately
+    if (!isInitialLoad) {
+        alertsToday++;
+        updateTopBarStats();
+        fetchTodayStats();
+    }
+    refreshTrainTableJPLColumn();
+    refreshAllTrainJPLTooltips();
+    refreshAllTrainPopups();
     const jpl = jplData[jplId];
 
     const existing = document.querySelectorAll(`.alert-item[data-jpl="${jplId}"]`);
@@ -1044,12 +1142,10 @@ function addJPLPanicAlert(alertData) {
     alertItem.className = 'alert-item alert-jpl';
     alertItem.dataset.jpl = jplId;
     alertItem.style.cursor = 'pointer';
-    // 🚀 Changed border from red (#ff453a) to orange (#ff9f0a)
-    alertItem.style.borderLeft = '5px solid #ff9f0a'; 
+    alertItem.style.borderLeft = '5px solid #ff9f0a';
 
     alertItem.innerHTML = `
         <div class="alert-header">
-            <!-- 🚀 Changed text color to orange (#ff9f0a) -->
             <span style="color:#ff9f0a; font-weight:bold;">🚨 PANIC BUTTON: ${jplId}</span>
             <button class="alert-close" data-jpl="${jplId}">&times;</button>
         </div>
@@ -1231,20 +1327,20 @@ function checkHealthStaleness() {
     let needsReSort = false;
     Object.keys(healthStatus).forEach(jplId => {
         const h = healthStatus[jplId];
-        const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
-        const isStale = !isNaN(firstSeenAt) && (now - firstSeenAt) > HEALTH_STALE_MS;
+        const lastSeenAt = h.__lastSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
+        const isStale = !isNaN(lastSeenAt) && (now - lastSeenAt) > HEALTH_STALE_MS;
         
         if (isStale && !staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.add(jplId);
             addInactivePanicButtonAlert(jplId, h);
             updateJPLMarkerColor(jplId); // 🚀 Paint Yellow
-            updateJPLTableRow(jplId); // 🚀 Update table status to Inactive
+            updateJPLTableRowStatus(jplId); // � Update table status to Inactive
             needsReSort = true;
         } else if (!isStale && staleSignalAlerted.has(jplId)) {
             staleSignalAlerted.delete(jplId);
             removeAlertCardsBy('data-stale-jpl', jplId);
             updateJPLMarkerColor(jplId); // 🚀 Paint Blue (Recovered)
-            updateJPLTableRow(jplId); // 🚀 Update table status to Aman
+            updateJPLTableRowStatus(jplId); // 🚀 Update table status to Aman
             needsReSort = true;
         }
     });
@@ -1270,7 +1366,7 @@ function addInactivePanicButtonAlert(jplId, health) {
             <button class="alert-close" data-stale-jpl="${jplId}">&times;</button>
         </div>
         <div class="alert-body">
-            <div>JPL tidak menerima sinyal healthStatus selama lebih dari 5 menit.</div>
+            <div>JPL tidak menerima sinyal healthStatus selama lebih dari 2 menit.</div>
             <div>${jpl.descript || ''}</div>
             ${popupInfoTable([
                 health && health.power ? popupInfoRow('Power', health.power) : '',
@@ -1304,9 +1400,10 @@ function formatPowerType(raw) {
 function isJPLInactive(jplId) {
     const h = healthStatus[jplId];
     if (!h) return false;
-    const firstSeenAt = h.__firstSeenAt || (h.datetime ? new Date(h.datetime).getTime() : NaN);
-    if (isNaN(firstSeenAt)) return false;
-    return (Date.now() - firstSeenAt) > HEALTH_STALE_MS;
+    // Use the actual datetime from the health message to determine staleness
+    const lastUpdateAt = h.datetime ? new Date(h.datetime).getTime() : NaN;
+    if (isNaN(lastUpdateAt)) return false;
+    return (Date.now() - lastUpdateAt) > HEALTH_STALE_MS;
 }
 
 function renderJPLTable(reset = false) {
